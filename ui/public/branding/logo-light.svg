@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200" fill="none">
+  <defs>
+    <linearGradient id="orbit-cyan" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+    
+    <linearGradient id="chart-green" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#047857"/>
+      <stop offset="50%" stop-color="#059669"/>
+      <stop offset="100%" stop-color="#10b981"/>
+    </linearGradient>
+
+    <linearGradient id="text-grad-light" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <linearGradient id="link-grad-light" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0284c7"/>
+      <stop offset="100%" stop-color="#059669"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Logo Icon Group -->
+  <g transform="translate(20, 10) scale(0.35)">
+    <!-- Outer Globe Ring -->
+    <ellipse cx="256" cy="256" rx="168" ry="168" fill="none" stroke="#cbd5e1" stroke-width="7"/>
+    
+    <!-- Dynamic Orbit ring -->
+    <ellipse cx="256" cy="256" rx="174" ry="66" fill="none" stroke="url(#orbit-cyan)" stroke-width="8" stroke-dasharray="130 25 60 20" transform="rotate(-28 256 256)"/>
+    
+    <!-- Globe Lines -->
+    <path d="M140 256 C 140 140, 372 140, 372 256 C 372 372, 140 372, 140 256 Z" fill="none" stroke="#94a3b8" stroke-width="4" opacity="0.6"/>
+    <path d="M256 92 C 195 170, 195 342, 256 420" fill="none" stroke="#94a3b8" stroke-width="3.5" opacity="0.5"/>
+    <path d="M256 92 C 317 170, 317 342, 256 420" fill="none" stroke="#94a3b8" stroke-width="3.5" opacity="0.5"/>
+
+    <!-- Candlesticks -->
+    <line x1="184" y1="210" x2="184" y2="320" stroke="#e11d48" stroke-width="4.5"/>
+    <rect x="176" y="235" width="16" height="50" rx="3" fill="#e11d48"/>
+
+    <line x1="232" y1="180" x2="232" y2="300" stroke="#059669" stroke-width="4.5"/>
+    <rect x="224" y="200" width="16" height="70" rx="3" fill="#059669"/>
+
+    <line x1="280" y1="140" x2="280" y2="270" stroke="#059669" stroke-width="4.5"/>
+    <rect x="272" y="160" width="16" height="85" rx="3" fill="#059669"/>
+
+    <!-- Trend Arrow -->
+    <path d="M120 350 C 170 340, 210 310, 260 220 C 300 150, 345 140, 385 130" 
+          fill="none" 
+          stroke="url(#chart-green)" 
+          stroke-width="14" 
+          stroke-linecap="round"/>
+    <path d="M348 122 L396 125 L382 172 Z" fill="#059669"/>
+    <circle cx="390" cy="130" r="8" fill="#ffffff" stroke="#059669" stroke-width="3"/>
+    <circle cx="390" cy="130" r="15" fill="none" stroke="#059669" stroke-width="3" opacity="0.6"/>
+    <circle cx="260" cy="220" r="7" fill="#0284c7"/>
+    <circle cx="180" cy="330" r="6" fill="#0284c7"/>
+  </g>
+
+  <!-- Typography -->
+  <text x="215" y="112" font-family="system-ui, -apple-system, 'Inter', 'Segoe UI', sans-serif" font-weight="800" font-size="64" fill="url(#text-grad-light)" letter-spacing="-1.5">GLOBAL</text>
+  <text x="500" y="112" font-family="system-ui, -apple-system, 'Inter', 'Segoe UI', sans-serif" font-weight="800" font-size="64" fill="url(#link-grad-light)" letter-spacing="-1.5">LINK</text>
+  
+  <rect x="218" y="132" width="530" height="1.5" fill="#cbd5e1"/>
+  <text x="220" y="156" font-family="system-ui, -apple-system, 'Inter', 'Segoe UI', sans-serif" font-weight="600" font-size="16" fill="#64748b" letter-spacing="4.5">NEXT-GEN SYNTHETIC TRADING PLATFORM</text>
+</svg>
