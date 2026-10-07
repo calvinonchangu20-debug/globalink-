@@ -62,12 +62,12 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
         },
         area: {
           lineSize: 2,
-          lineColor: dark ? "#39FF14" : "#2196f3",
+          lineColor: "#39FF14",
           value: "close",
           smooth: false,
           backgroundColor: chartStyle === "line" 
             ? "transparent" 
-            : dark ? "rgba(57, 255, 20, 0.12)" : "rgba(33, 150, 243, 0.15)",
+            : dark ? "rgba(57, 255, 20, 0.12)" : "rgba(57, 255, 20, 0.15)",
         }
       }
     };
