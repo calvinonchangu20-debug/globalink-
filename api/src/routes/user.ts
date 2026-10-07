@@ -53,9 +53,9 @@ router.get("/api/user/profile", authMiddleware, async (req: AuthRequest, res: Re
     const winRate = settled > 0 ? Math.round((wonTrades / settled) * 100) : 0;
     const totalStakeUSD = tradeStats?.totalStakeUSD ?? "0.00";
 
-    // Compute user transaction stats via SQL aggregation (strictly M-Pesa deposits in USD)
+    // Compute user transaction stats via SQL aggregation (strictly deposits in USD)
     const [txStats] = await db.select({
-      totalDepositedUSD: sql<string>`coalesce(sum(${transactions.amount}) filter (where ${transactions.direction} = 'credit' and ${transactions.status} = 'completed' and ${transactions.type} in ('mpesa_stk', 'mpesa_c2b')), 0)::numeric(14,2)::text`,
+      totalDepositedUSD: sql<string>`coalesce(sum(${transactions.amount}) filter (where ${transactions.direction} = 'credit' and ${transactions.status} = 'completed' and ${transactions.type} in ('mpesa_stk', 'mpesa_c2b', 'crypto_deposit')), 0)::numeric(14,2)::text`,
     }).from(transactions).where(eq(transactions.userId, userId));
 
     const totalDepositedUSD = txStats?.totalDepositedUSD ?? "0.00";

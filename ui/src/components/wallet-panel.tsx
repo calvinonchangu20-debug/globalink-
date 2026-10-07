@@ -17,6 +17,9 @@ import {
   Smartphone,
   ChevronRight,
   FlaskConical,
+  Coins,
+  Copy,
+  Check,
 } from "lucide-react"
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
@@ -27,13 +30,13 @@ type AccountType = "demo" | "real"
 
 // ─── Payment Method Modal ─────────────────────────────────────────────────────
 
-type PaymentStep = "method" | "form" | "pending" | "success" | "error"
+type PaymentStep = "method" | "form" | "pending" | "crypto_invoice" | "success" | "error"
 
 const PAYMENT_METHODS = [
   {
     id: "mpesa",
     label: "M-Pesa",
-    description: "STK push to your Safaricom number",
+    description: "Instant mobile money",
     icon: Smartphone,
     color: "text-emerald-500",
     bg: "bg-emerald-500/10",
@@ -41,48 +44,91 @@ const PAYMENT_METHODS = [
   },
   {
     id: "card",
-    label: "Debit / Credit Card",
-    description: "Visa, Mastercard (coming soon)",
+    label: "Credit / Debit Card",
+    description: "Visa, Mastercard, M-Pesa",
     icon: CreditCard,
     color: "text-blue-500",
     bg: "bg-blue-500/10",
     disabled: true as boolean,
+  },
+  {
+    id: "crypto",
+    label: "USDT (TRC20)",
+    description: "Cryptocurrency",
+    icon: Coins,
+    color: "text-amber-500 dark:text-amber-400",
+    bg: "bg-amber-500/10",
+    disabled: false as boolean,
   },
 ] as const
 
 type MethodId = (typeof PAYMENT_METHODS)[number]["id"]
 
 function PaymentModal({ onClose }: { onClose: () => void }) {
-  const { wallet, deposit } = useWallet()
+  const {
+    wallet,
+    deposit,
+    depositCrypto,
+    checkCryptoStatus,
+    simulateCryptoPayment,
+  } = useWallet()
 
   const [step, setStep] = useState<PaymentStep>("method")
   const [method, setMethod] = useState<MethodId | null>(null)
 
-  // M-Pesa form state
+  // Form states
   const [amount, setAmount] = useState("")
   const [phone, setPhone] = useState("")
   const [message, setMessage] = useState("")
   const [expiresAt, setExpiresAt] = useState<string | null>(null)
   const [exchangeRate, setExchangeRate] = useState<number>(130) // fallback
 
+  // Crypto states
+  const [cryptoNetwork, setCryptoNetwork] = useState<string>("TRC20")
+  const [cryptoInvoice, setCryptoInvoice] = useState<any | null>(null)
+  const [cryptoStatus, setCryptoStatus] = useState<string>("waiting")
+  const [cryptoCopied, setCryptoCopied] = useState(false)
+  const [cryptoLoading, setCryptoLoading] = useState(false)
+
   useEffect(() => {
-    if (step === "form") {
+    if (step === "form" && method === "mpesa") {
       fetch(`${API_BASE}/api/payments/exchange-rate`)
-        .then(res => res.json())
-        .then(data => data.rate && setExchangeRate(data.rate))
+        .then((res) => res.json())
+        .then((data) => data.rate && setExchangeRate(data.rate))
         .catch(() => {})
     }
-  }, [step])
+  }, [step, method])
 
-  const quickAmounts = [10, 20, 50, 100, 200, 500]
+  // Poll crypto invoice status when on crypto_invoice step
+  useEffect(() => {
+    if (step !== "crypto_invoice" || !cryptoInvoice?.paymentId) return
+
+    const interval = setInterval(async () => {
+      const res = await checkCryptoStatus(cryptoInvoice.paymentId)
+      if (res) {
+        setCryptoStatus(res.status)
+        if (res.isCompleted) {
+          clearInterval(interval)
+          setMessage("Payment confirmed on blockchain! Balance updated.")
+          setStep("success")
+        }
+      }
+    }, 3500)
+
+    return () => clearInterval(interval)
+  }, [step, cryptoInvoice, checkCryptoStatus])
+
+  const quickAmounts = [10, 25, 50, 100, 200, 500]
   const kesAmount = amount ? Math.floor(parseFloat(amount) * exchangeRate) : 0
 
   function selectMethod(id: MethodId) {
     setMethod(id)
+    setAmount("")
+    setMessage("")
     setStep("form")
   }
 
-  async function handleDeposit() {
+  async function handleMpesaDeposit() {
     const amt = parseFloat(amount)
     if (!amt || amt < 10) {
       setMessage("Minimum deposit is $10")
@@ -102,6 +148,46 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function handleCryptoDeposit() {
+    const amt = parseFloat(amount)
+    if (!amt || amt < 10) {
+      setMessage("Minimum crypto deposit is $10 USD")
+      return
+    }
+    setCryptoLoading(true)
+    setMessage("")
+
+    const result = await depositCrypto(amt, cryptoNetwork)
+    setCryptoLoading(false)
+
+    if (result.success && result.paymentId) {
+      setCryptoInvoice(result)
+      setCryptoStatus("waiting")
+      setStep("crypto_invoice")
+    } else {
+      setMessage(result.message || "Failed to generate crypto address")
+    }
+  }
+
+  async function handleSimulatePay() {
+    if (!cryptoInvoice?.paymentId) return
+    setCryptoLoading(true)
+    const success = await simulateCryptoPayment(cryptoInvoice.paymentId)
+    setCryptoLoading(false)
+    if (success) {
+      setMessage("Test deposit confirmed! Balance updated.")
+      setStep("success")
+    } else {
+      setMessage("Simulation failed.")
+    }
+  }
+
+  function copyAddress(addr: string) {
+    navigator.clipboard.writeText(addr)
+    setCryptoCopied(true)
+    setTimeout(() => setCryptoCopied(false), 2000)
+  }
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm"
@@ -110,18 +196,44 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
       <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b">
-          <div className="flex items-center gap-2">
-            <div className="bg-emerald-500/10 p-1.5 rounded-lg">
-              <ArrowDownToLine className="h-4 w-4 text-emerald-500" />
+          <div className="flex items-center gap-2.5">
+            <div
+              className={`p-1.5 rounded-lg ${
+                method === "crypto"
+                  ? "bg-amber-500/10 text-amber-500"
+                  : "bg-emerald-500/10 text-emerald-500"
+              }`}
+            >
+              {method === "crypto" ? (
+                <Coins className="h-4 w-4" />
+              ) : (
+                <ArrowDownToLine className="h-4 w-4" />
+              )}
             </div>
-            <h2 className="font-semibold text-base">
-              {step === "method" ? "Choose Payment Method" : "Deposit via M-Pesa"}
-            </h2>
+            <div>
+              <h2 className="font-semibold text-base leading-tight">
+                {step === "method"
+                  ? "Deposit Funds"
+                  : method === "crypto"
+                  ? step === "crypto_invoice"
+                    ? "Send USDT Deposit"
+                    : "Deposit via USDT (TRC20)"
+                  : "Deposit via M-Pesa"}
+              </h2>
+              {step === "method" && (
+                <p className="text-xs text-muted-foreground mt-0.5">
+                  Fund your real trading account
+                </p>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-1">
-            {step === "form" && (
+            {(step === "form" || step === "crypto_invoice") && (
               <button
-                onClick={() => setStep("method")}
+                onClick={() => {
+                  if (step === "crypto_invoice") setStep("form")
+                  else setStep("method")
+                }}
                 className="text-muted-foreground hover:text-foreground text-xs px-2 py-1 rounded hover:bg-muted transition-colors"
               >
                 ← Back
@@ -136,7 +248,7 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="p-5 space-y-4 max-h-[85vh] overflow-y-auto">
           {/* Current Balance */}
           {wallet && (
             <div className="bg-muted/50 rounded-lg px-4 py-2.5 flex justify-between items-center">
@@ -156,9 +268,10 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
                   disabled={pm.disabled}
                   onClick={() => !pm.disabled && selectMethod(pm.id)}
                   className={`w-full flex items-center gap-3 px-4 py-3.5 rounded-xl border text-left transition-all
-                    ${pm.disabled
-                      ? "opacity-40 cursor-not-allowed bg-muted/30"
-                      : "hover:border-emerald-500/50 hover:bg-emerald-500/5 cursor-pointer active:scale-[0.98]"
+                    ${
+                      pm.disabled
+                        ? "opacity-40 cursor-not-allowed bg-muted/30"
+                        : "hover:border-emerald-500/50 hover:bg-emerald-500/5 cursor-pointer active:scale-[0.98]"
                     }`}
                 >
                   <div className={`${pm.bg} p-2 rounded-lg shrink-0`}>
@@ -181,6 +294,171 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
             </div>
           )}
 
+          {/* Step: Crypto Deposit Form */}
+          {step === "form" && method === "crypto" && (
+            <>
+              {/* Network Selection */}
+              <div>
+                <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-2 block">
+                  Select USDT Network
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: "TRC20", name: "TRON", fee: "TRC-20" },
+                    { id: "BEP20", name: "BNB Chain", fee: "BEP-20" },
+                    { id: "POLYGON", name: "Polygon", fee: "POLYGON" },
+                  ].map((net) => (
+                    <button
+                      key={net.id}
+                      type="button"
+                      onClick={() => setCryptoNetwork(net.id)}
+                      className={`p-2 rounded-xl text-center border transition-all ${
+                        cryptoNetwork === net.id
+                          ? "border-teal-500 bg-teal-500/10 text-teal-400 font-semibold shadow-xs"
+                          : "border-border text-muted-foreground hover:border-muted-foreground/50 hover:bg-muted"
+                      }`}
+                    >
+                      <div className="text-xs">{net.name}</div>
+                      <div className="text-[10px] opacity-75">{net.fee}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Quick Select Amounts */}
+              <div>
+                <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-2 block">
+                  Amount (USD)
+                </label>
+                <div className="grid grid-cols-3 gap-2 mb-2">
+                  {quickAmounts.map((q) => (
+                    <button
+                      key={q}
+                      type="button"
+                      onClick={() => setAmount(String(q))}
+                      className={`py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                        amount === String(q)
+                          ? "bg-teal-500/10 border-teal-500/40 text-teal-400 font-semibold"
+                          : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      ${q.toLocaleString()}
+                    </button>
+                  ))}
+                </div>
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm font-medium">
+                    $
+                  </span>
+                  <input
+                    type="number"
+                    min="10"
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                    placeholder="10.00"
+                    className="w-full bg-muted border rounded-md pl-7 pr-4 py-2.5 text-sm focus:outline-none focus:ring-1 focus:ring-teal-500 focus:border-teal-500"
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-lg bg-teal-500/10 border border-teal-500/20 p-2.5 text-xs text-teal-300">
+                ⚡ 1 USDT = $1.00 USD. Deposits credit automatically once confirmed on the blockchain.
+              </div>
+
+              {message && (
+                <p className="text-xs text-red-500 bg-red-500/10 rounded-md px-3 py-2">{message}</p>
+              )}
+
+              <Button
+                className="w-full bg-teal-600 hover:bg-teal-700 text-white font-semibold flex items-center justify-center gap-2"
+                onClick={handleCryptoDeposit}
+                disabled={!amount || cryptoLoading}
+              >
+                {cryptoLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                Generate Deposit Address
+              </Button>
+            </>
+          )}
+
+          {/* Step: Crypto Invoice (QR & Address) */}
+          {step === "crypto_invoice" && cryptoInvoice && (
+            <div className="space-y-3.5 text-center">
+              <div className="bg-teal-500/10 border border-teal-500/20 rounded-xl p-3">
+                <span className="text-xs text-muted-foreground block">Amount to Send</span>
+                <span className="text-xl font-bold text-teal-400">
+                  {cryptoInvoice.payAmount} USDT
+                </span>
+                <span className="text-[11px] text-muted-foreground block mt-0.5">
+                  Network: <strong className="text-foreground">{cryptoInvoice.network}</strong>
+                </span>
+              </div>
+
+              {/* QR Code */}
+              <div className="flex justify-center">
+                <div className="p-2 bg-white rounded-2xl shadow-sm border border-border">
+                  <img
+                    src={cryptoInvoice.qrCodeUrl}
+                    alt="Deposit QR Code"
+                    className="w-40 h-40 object-contain"
+                  />
+                </div>
+              </div>
+
+              {/* Deposit Address Box */}
+              <div className="text-left space-y-1">
+                <label className="text-[11px] text-muted-foreground font-semibold uppercase">
+                  Deposit Address
+                </label>
+                <div className="flex items-center gap-1.5 bg-muted p-2 rounded-lg border border-border">
+                  <span className="text-xs font-mono break-all select-all flex-1">
+                    {cryptoInvoice.payAddress}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => copyAddress(cryptoInvoice.payAddress)}
+                    className="p-1.5 hover:bg-background rounded-md text-muted-foreground hover:text-foreground transition-colors shrink-0"
+                    title="Copy Address"
+                  >
+                    {cryptoCopied ? (
+                      <Check className="h-4 w-4 text-emerald-500" />
+                    ) : (
+                      <Copy className="h-4 w-4" />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Status indicator */}
+              <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-teal-400" />
+                <span>
+                  {cryptoStatus === "confirming"
+                    ? "Transaction detected! Confirming on-chain..."
+                    : "Waiting for payment on blockchain..."}
+                </span>
+              </div>
+
+              {/* Sandbox test button */}
+              {cryptoInvoice.isSandbox && (
+                <div className="pt-2 border-t border-border/50">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSimulatePay}
+                    disabled={cryptoLoading}
+                    className="w-full text-xs border-dashed border-teal-500/40 text-teal-400 hover:bg-teal-500/10"
+                  >
+                    {cryptoLoading ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : (
+                      "🧪 Simulate Payment (Test Mode)"
+                    )}
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Step: M-Pesa form */}
           {step === "form" && method === "mpesa" && (
             <>
@@ -193,6 +471,7 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
                   {quickAmounts.map((q) => (
                     <button
                       key={q}
+                      type="button"
                       onClick={() => setAmount(String(q))}
                       className={`py-1.5 rounded-md text-xs font-medium border transition-colors ${
                         amount === String(q)
@@ -213,7 +492,9 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
                     Amount (USD)
                   </label>
                   {amount && kesAmount > 0 && (
-                    <span className="text-[10px] text-emerald-600 font-medium">≈ KES {kesAmount.toLocaleString()}</span>
+                    <span className="text-[10px] text-emerald-600 font-medium">
+                      ≈ KES {kesAmount.toLocaleString()}
+                    </span>
                   )}
                 </div>
                 <div className="relative">
@@ -235,7 +516,9 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
               <div>
                 <label className="text-xs text-muted-foreground font-semibold uppercase tracking-wider mb-1.5 block">
                   M-Pesa Phone{" "}
-                  <span className="font-normal normal-case text-muted-foreground/60">(leave blank to use account phone)</span>
+                  <span className="font-normal normal-case text-muted-foreground/60">
+                    (leave blank to use account phone)
+                  </span>
                 </label>
                 <div className="relative">
                   <PhoneCall className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
@@ -255,7 +538,7 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
 
               <Button
                 className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
-                onClick={handleDeposit}
+                onClick={handleMpesaDeposit}
                 disabled={!amount}
               >
                 Send M-Pesa Prompt
@@ -289,7 +572,7 @@ function PaymentModal({ onClose }: { onClose: () => void }) {
                 <CheckCircle2 className="h-8 w-8 text-emerald-500" />
               </div>
               <div>
-                <p className="font-semibold">Prompt Sent!</p>
+                <p className="font-semibold">Deposit Successful!</p>
                 <p className="text-sm text-muted-foreground mt-1">{message}</p>
                 {expiresAt && (
                   <p className="text-xs text-muted-foreground/60 mt-1">
@@ -343,6 +626,8 @@ function TxRow({ tx }: { tx: Transaction }) {
   const typeLabel: Record<string, string> = {
     mpesa_stk: "STK Push",
     mpesa_c2b: "Paybill",
+    crypto_deposit: "Crypto (USDT)",
+    crypto_withdrawal: "Crypto Payout",
     withdrawal: "Withdrawal",
     adjustment: "Adjustment",
   }

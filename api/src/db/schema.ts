@@ -24,6 +24,8 @@ export const txDirectionEnum = pgEnum("tx_direction", ["credit", "debit"]);
 export const txTypeEnum = pgEnum("tx_type", [
   "mpesa_stk",
   "mpesa_c2b",
+  "crypto_deposit",
+  "crypto_withdrawal",
   "withdrawal",
   "adjustment",
   "trade_stake",
@@ -155,6 +157,34 @@ export const mpesaPendingStk = pgTable(
     expiresAt: timestamp("expires_at").notNull(),
   },
   (table) => [uniqueIndex("mpesa_pending_stk_checkout_idx").on(table.checkoutRequestId)]
+);
+
+// ─── Crypto Pending Payments (NOWPayments / USDT) ───────────────────────────
+
+export const cryptoPendingPayments = pgTable(
+  "crypto_pending_payments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    transactionId: uuid("transaction_id")
+      .notNull()
+      .references(() => transactions.id, { onDelete: "cascade" }),
+
+    paymentId: varchar("payment_id", { length: 100 }).notNull(),
+    payAddress: varchar("pay_address", { length: 255 }).notNull(),
+    payCurrency: varchar("pay_currency", { length: 30 }).notNull(), // e.g. "usdttrc20", "usdtbsc", "usdtpolygon"
+    network: varchar("network", { length: 50 }).notNull(), // e.g. "TRC20", "BEP20", "POLYGON"
+    amountUSD: numeric("amount_usd", { precision: 14, scale: 2 }).notNull(),
+    payAmount: numeric("pay_amount", { precision: 18, scale: 8 }),
+    status: varchar("status", { length: 50 }).notNull().default("waiting"), // waiting, confirming, finished, failed, expired
+    txHash: varchar("tx_hash", { length: 255 }),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => [uniqueIndex("crypto_pending_payment_id_idx").on(table.paymentId)]
 );
 
 // ─── Trades (Binary Options Engine) ──────────────────────────────────────────

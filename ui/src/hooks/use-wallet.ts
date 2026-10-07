@@ -3,7 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { apiFetch } from "@/lib/api";
 
 export type TxDirection = "credit" | "debit";
-export type TxType = "mpesa_stk" | "mpesa_c2b" | "withdrawal" | "adjustment";
+export type TxType = "mpesa_stk" | "mpesa_c2b" | "crypto_deposit" | "crypto_withdrawal" | "withdrawal" | "adjustment";
 export type TxStatus = "pending" | "completed" | "failed" | "reversed";
 
 export interface Transaction {
@@ -29,6 +29,30 @@ export interface DepositResult {
   message: string;
   checkoutRequestId?: string;
   expiresAt?: string;
+}
+
+export interface CryptoDepositResult {
+  success: boolean;
+  message: string;
+  paymentId?: string;
+  payAddress?: string;
+  payAmount?: number;
+  payCurrency?: string;
+  network?: string;
+  qrCodeUrl?: string;
+  isSandbox?: boolean;
+  confirmationsNeeded?: number;
+}
+
+export interface CryptoStatusResult {
+  paymentId: string;
+  status: string;
+  payAddress: string;
+  payCurrency: string;
+  network: string;
+  amountUSD: number;
+  txHash?: string;
+  isCompleted: boolean;
 }
 
 export interface WithdrawResult {
@@ -156,5 +180,88 @@ export function useWallet() {
     [token, fetchWallet]
   );
 
-  return { wallet, loading, error, refetch: fetchWallet, deposit, withdraw };
+  const depositCrypto = useCallback(
+    async (amount: number, network: string = "TRC20"): Promise<CryptoDepositResult> => {
+      if (!token) return { success: false, message: "Not authenticated" };
+      try {
+        const res = await apiFetch("/api/payments/crypto/deposit", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ amount, network }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          return { success: false, message: data?.error ?? "Crypto deposit initiation failed" };
+        }
+        return {
+          success: true,
+          message: data.message,
+          paymentId: data.paymentId,
+          payAddress: data.payAddress,
+          payAmount: data.payAmount,
+          payCurrency: data.payCurrency,
+          network: data.network,
+          qrCodeUrl: data.qrCodeUrl,
+          isSandbox: data.isSandbox,
+          confirmationsNeeded: data.confirmationsNeeded,
+        };
+      } catch (e: any) {
+        return { success: false, message: e.message ?? "Network error initiating crypto deposit" };
+      }
+    },
+    [token]
+  );
+
+  const checkCryptoStatus = useCallback(
+    async (paymentId: string): Promise<CryptoStatusResult | null> => {
+      if (!token || !paymentId) return null;
+      try {
+        const res = await apiFetch(`/api/payments/crypto/status/${paymentId}`);
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (data.isCompleted) {
+          fetchWallet();
+        }
+        return data;
+      } catch {
+        return null;
+      }
+    },
+    [token, fetchWallet]
+  );
+
+  const simulateCryptoPayment = useCallback(
+    async (paymentId: string): Promise<boolean> => {
+      if (!token || !paymentId) return false;
+      try {
+        const res = await apiFetch("/api/payments/crypto/simulate-pay", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paymentId }),
+        });
+        if (res.ok) {
+          fetchWallet();
+          return true;
+        }
+        return false;
+      } catch {
+        return false;
+      }
+    },
+    [token, fetchWallet]
+  );
+
+  return {
+    wallet,
+    loading,
+    error,
+    refetch: fetchWallet,
+    deposit,
+    withdraw,
+    depositCrypto,
+    checkCryptoStatus,
+    simulateCryptoPayment,
+  };
 }

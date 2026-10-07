@@ -46,11 +46,11 @@ router.get("/api/admin/metrics", authMiddleware, requireAdmin, async (_req: Auth
     // 3. Transactions / Financials
     const [financeStats] = await db
       .select({
-        totalDeposits: sql<string>`coalesce(sum(case when ${transactions.type} in ('mpesa_stk', 'mpesa_c2b') and ${transactions.status} = 'completed' then ${transactions.amount} else 0 end), 0)`,
+        totalDeposits: sql<string>`coalesce(sum(case when ${transactions.type} in ('mpesa_stk', 'mpesa_c2b', 'crypto_deposit') and ${transactions.status} = 'completed' then ${transactions.amount} else 0 end), 0)`,
         totalPayouts: sql<string>`coalesce(sum(case when ${transactions.type} = 'trade_payout' and ${transactions.status} = 'completed' then ${transactions.amount} else 0 end), 0)`,
-        totalWithdrawals: sql<string>`coalesce(sum(case when ${transactions.type} = 'withdrawal' and ${transactions.status} = 'completed' then ${transactions.amount} else 0 end), 0)`,
-        pendingDeposits: sql<number>`count(case when ${transactions.type} in ('mpesa_stk', 'mpesa_c2b') and ${transactions.status} = 'pending' then 1 end)`,
-        pendingWithdrawals: sql<number>`count(case when ${transactions.type} = 'withdrawal' and ${transactions.status} = 'pending' then 1 end)`,
+        totalWithdrawals: sql<string>`coalesce(sum(case when ${transactions.type} in ('withdrawal', 'crypto_withdrawal') and ${transactions.status} = 'completed' then ${transactions.amount} else 0 end), 0)`,
+        pendingDeposits: sql<number>`count(case when ${transactions.type} in ('mpesa_stk', 'mpesa_c2b', 'crypto_deposit') and ${transactions.status} = 'pending' then 1 end)`,
+        pendingWithdrawals: sql<number>`count(case when ${transactions.type} in ('withdrawal', 'crypto_withdrawal') and ${transactions.status} = 'pending' then 1 end)`,
       })
       .from(transactions);
 

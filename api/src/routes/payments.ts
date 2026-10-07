@@ -2,8 +2,9 @@ import express from "express";
 import { getUsdToKesRate } from "../services/exchange.service.js";
 import { eq, and, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, transactions, mpesaPendingStk } from "../db/schema.js";
+import { users, transactions, mpesaPendingStk, cryptoPendingPayments } from "../db/schema.js";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
+import { CryptoPaymentService, SUPPORTED_CRYPTO_NETWORKS } from "../services/crypto.service.js";
 import {
   getMpesaService,
   parseStkCallback,
@@ -814,6 +815,297 @@ router.post("/api/payments/mpesa/register-c2b", authMiddleware, async (req: Auth
   } catch (err: any) {
     console.error("[payments] C2B registration error:", err);
     res.status(502).json({ error: err.message || "Failed to register C2B URLs" });
+  }
+});
+
+// ─── CRYPTO PAYMENTS (USDT via NOWPayments) ──────────────────────────────────
+
+// GET /api/payments/crypto/config
+// Returns supported networks and deposit minimums
+router.get("/api/payments/crypto/config", (_req, res) => {
+  res.json({
+    networks: Object.values(SUPPORTED_CRYPTO_NETWORKS),
+    defaultNetwork: "TRC20",
+    minDepositUSD: 10,
+  });
+});
+
+// POST /api/payments/crypto/deposit
+// Authenticated. Creates a pending transaction and crypto invoice with a deposit address.
+router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { amount, network = "TRC20" } = req.body;
+
+    if (!amount || typeof amount !== "number" || amount < 10) {
+      return res.status(400).json({ error: "Minimum deposit is 10 USD" });
+    }
+
+    const netKey = (network || "TRC20").toUpperCase();
+    const netConfig = SUPPORTED_CRYPTO_NETWORKS[netKey];
+    if (!netConfig) {
+      return res.status(400).json({ error: `Unsupported crypto network: ${network}. Choose TRC20, BEP20, or POLYGON.` });
+    }
+
+    // Check user exists
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Step 1: Create a pending ledger entry in transactions
+    const [txRecord] = await db
+      .insert(transactions)
+      .values({
+        userId,
+        amount: amount.toFixed(2),
+        direction: "credit",
+        type: "crypto_deposit",
+        status: "pending",
+        description: `Pending USDT deposit via ${netConfig.name}`,
+      })
+      .returning();
+
+    // Step 2: Create payment invoice via CryptoPaymentService
+    const host = req.get("host") || "localhost:3001";
+    const protocol = req.secure || req.headers["x-forwarded-proto"] === "https" ? "https" : "http";
+    const ipnCallbackUrl = `${protocol}://${host}/api/payments/crypto/ipn`;
+
+    const cryptoService = CryptoPaymentService.getInstance();
+    const invoice = await cryptoService.createInvoice({
+      userId,
+      transactionId: txRecord.id,
+      amountUSD: amount,
+      networkKey: netConfig.id,
+      ipnCallbackUrl,
+    });
+
+    // Step 3: Record pending crypto payment
+    await db.insert(cryptoPendingPayments).values({
+      userId,
+      transactionId: txRecord.id,
+      paymentId: invoice.paymentId,
+      payAddress: invoice.payAddress,
+      payCurrency: invoice.payCurrency,
+      network: invoice.network,
+      amountUSD: amount.toFixed(2),
+      payAmount: invoice.payAmount.toFixed(8),
+      status: "waiting",
+    });
+
+    res.json({
+      success: true,
+      transactionId: txRecord.id,
+      paymentId: invoice.paymentId,
+      payAddress: invoice.payAddress,
+      payAmount: invoice.payAmount,
+      payCurrency: invoice.payCurrency,
+      network: invoice.network,
+      qrCodeUrl: invoice.qrCodeUrl,
+      isSandbox: invoice.isSandbox,
+      confirmationsNeeded: netConfig.confirmationsNeeded,
+      message: `Send ${invoice.payAmount} USDT via ${netConfig.name} to the address provided.`,
+    });
+  } catch (err: any) {
+    console.error("[payments] crypto deposit error:", err);
+    res.status(500).json({ error: err.message || "Failed to initiate crypto deposit" });
+  }
+});
+
+// GET /api/payments/crypto/status/:paymentId
+// Authenticated. Checks on-chain / gateway status of an invoice.
+router.get("/api/payments/crypto/status/:paymentId", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { paymentId } = req.params;
+    const userId = req.user!.id;
+
+    const [pending] = await db
+      .select()
+      .from(cryptoPendingPayments)
+      .where(and(eq(cryptoPendingPayments.paymentId, paymentId), eq(cryptoPendingPayments.userId, userId)));
+
+    if (!pending) {
+      return res.status(404).json({ error: "Payment record not found" });
+    }
+
+    // If still waiting and connected to live gateway, query gateway status
+    if (pending.status === "waiting" || pending.status === "confirming") {
+      const cryptoService = CryptoPaymentService.getInstance();
+      const statusData = await cryptoService.getPaymentStatus(paymentId);
+      if (statusData && statusData.payment_status) {
+        const gwStatus = statusData.payment_status; // "confirming", "finished", "failed", etc.
+        if (gwStatus !== pending.status) {
+          if (gwStatus === "finished" || gwStatus === "confirmed") {
+            // Apply atomic settlement
+            await settleCryptoPayment(paymentId, statusData.pay_amount || pending.payAmount, statusData.tx_hash);
+            pending.status = "finished";
+          } else {
+            await db
+              .update(cryptoPendingPayments)
+              .set({ status: gwStatus, updatedAt: new Date() })
+              .where(eq(cryptoPendingPayments.id, pending.id));
+            pending.status = gwStatus;
+          }
+        }
+      }
+    }
+
+    res.json({
+      paymentId: pending.paymentId,
+      status: pending.status,
+      payAddress: pending.payAddress,
+      payCurrency: pending.payCurrency,
+      network: pending.network,
+      amountUSD: Number(pending.amountUSD),
+      txHash: pending.txHash,
+      isCompleted: pending.status === "finished",
+    });
+  } catch (err: any) {
+    console.error("[payments] crypto status error:", err);
+    res.status(500).json({ error: "Failed to fetch crypto payment status" });
+  }
+});
+
+// Helper: Settles crypto payment atomically
+async function settleCryptoPayment(paymentId: string, actualPaid?: string | number, txHash?: string) {
+  return await db.transaction(async (tx) => {
+    const [pending] = await tx
+      .select()
+      .from(cryptoPendingPayments)
+      .where(eq(cryptoPendingPayments.paymentId, paymentId));
+
+    if (!pending) {
+      console.warn(`[CryptoSettle] No pending record for paymentId: ${paymentId}`);
+      return false;
+    }
+
+    if (pending.status === "finished") {
+      return true; // Already processed
+    }
+
+    const [pendingTx] = await tx
+      .select()
+      .from(transactions)
+      .where(and(eq(transactions.id, pending.transactionId), eq(transactions.status, "pending")));
+
+    if (!pendingTx) {
+      console.warn(`[CryptoSettle] Transaction already settled or not found: ${pending.transactionId}`);
+      return false;
+    }
+
+    // 1. Atomically credit user balance
+    const [updatedUser] = await tx
+      .update(users)
+      .set({
+        balance: sql`${users.balance} + ${pendingTx.amount}`,
+        updatedAt: new Date(),
+      })
+      .where(eq(users.id, pending.userId))
+      .returning({ balance: users.balance });
+
+    const newBalance = updatedUser?.balance ?? "0";
+
+    // 2. Mark transaction completed
+    await tx
+      .update(transactions)
+      .set({
+        status: "completed",
+        balanceAfter: newBalance,
+        completedAt: new Date(),
+        description: `Deposit via USDT (${pending.network}) – Invoice ${paymentId}`,
+      })
+      .where(eq(transactions.id, pendingTx.id));
+
+    // 3. Mark crypto pending payment as finished
+    await tx
+      .update(cryptoPendingPayments)
+      .set({
+        status: "finished",
+        txHash: txHash || pending.txHash,
+        updatedAt: new Date(),
+      })
+      .where(eq(cryptoPendingPayments.id, pending.id));
+
+    console.log(`[CryptoSettle] Credited ${pendingTx.amount} USD to user ${pending.userId} for invoice ${paymentId}`);
+    return true;
+  });
+}
+
+// POST /api/payments/crypto/ipn
+// Public webhook from NOWPayments
+router.post("/api/payments/crypto/ipn", async (req, res) => {
+  try {
+    const cryptoService = CryptoPaymentService.getInstance();
+    const signature = req.headers["x-nowpayments-sig"] as string | undefined;
+
+    const isValid = cryptoService.verifyIpnSignature(req.body, signature);
+    if (!isValid) {
+      console.warn("[CryptoIPN] Invalid webhook signature rejected");
+      return res.status(400).json({ error: "Invalid signature" });
+    }
+
+    const { payment_id, payment_status, actually_paid, pay_amount, pay_address } = req.body;
+    console.log(`[CryptoIPN] Received webhook for payment ${payment_id}: status=${payment_status}`);
+
+    if (!payment_id) {
+      return res.status(400).json({ error: "Missing payment_id" });
+    }
+
+    const stringPaymentId = String(payment_id);
+
+    if (payment_status === "finished" || payment_status === "confirmed") {
+      await settleCryptoPayment(stringPaymentId, actually_paid || pay_amount, req.body.tx_hash);
+    } else {
+      // Update intermediate status (e.g., "confirming", "partially_paid", "failed")
+      await db
+        .update(cryptoPendingPayments)
+        .set({
+          status: payment_status,
+          updatedAt: new Date(),
+        })
+        .where(eq(cryptoPendingPayments.paymentId, stringPaymentId));
+    }
+
+    res.json({ success: true });
+  } catch (err: any) {
+    console.error("[CryptoIPN] Error handling IPN callback:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/payments/crypto/simulate-pay
+// Authenticated testing endpoint for development / sandbox testing
+router.post("/api/payments/crypto/simulate-pay", authMiddleware, async (req: AuthRequest, res) => {
+  try {
+    const { paymentId } = req.body;
+    const userId = req.user!.id;
+
+    if (!paymentId) {
+      return res.status(400).json({ error: "paymentId is required" });
+    }
+
+    const [pending] = await db
+      .select()
+      .from(cryptoPendingPayments)
+      .where(and(eq(cryptoPendingPayments.paymentId, paymentId), eq(cryptoPendingPayments.userId, userId)));
+
+    if (!pending) {
+      return res.status(404).json({ error: "Pending payment not found" });
+    }
+
+    const fakeTxHash = `0xsim_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const settled = await settleCryptoPayment(paymentId, pending.payAmount || pending.amountUSD, fakeTxHash);
+
+    if (settled) {
+      res.json({
+        success: true,
+        message: "Payment simulation completed. Balance updated successfully!",
+        txHash: fakeTxHash,
+      });
+    } else {
+      res.status(400).json({ error: "Payment was already settled or cannot be processed" });
+    }
+  } catch (err: any) {
+    console.error("[payments] simulate-pay error:", err);
+    res.status(500).json({ error: "Simulation failed" });
   }
 });
 

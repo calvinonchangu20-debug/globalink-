@@ -61,13 +61,54 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
           showRule: "none" as any, // Disables OHLC legend clutter completely!
         },
         area: {
-          lineSize: 2,
+          lineSize: 3,
           lineColor: "#39FF14",
           value: "close",
-          smooth: false,
+          smooth: true,
           backgroundColor: chartStyle === "line" 
             ? "transparent" 
-            : dark ? "rgba(57, 255, 20, 0.12)" : "rgba(57, 255, 20, 0.15)",
+            : [
+                { offset: 0, color: "rgba(57, 255, 20, 0)" },
+                { offset: 0.4, color: dark ? "rgba(57, 255, 20, 0.08)" : "rgba(57, 255, 20, 0.05)" },
+                { offset: 1, color: dark ? "rgba(57, 255, 20, 0.38)" : "rgba(57, 255, 20, 0.28)" },
+              ] as any,
+          point: {
+            show: true,
+            color: "#39FF14",
+            radius: 4,
+            rippleColor: "rgba(57, 255, 20, 0.35)",
+            rippleRadius: 10,
+            animation: true,
+            animationDuration: 1000,
+          }
+        },
+        priceMark: {
+          show: true,
+          high: { show: false },
+          low: { show: false },
+          last: {
+            show: true,
+            upColor: "#39FF14",
+            downColor: "#39FF14",
+            noChangeColor: "#39FF14",
+            line: {
+              show: true,
+              style: "dashed" as any,
+              dashedValue: [4, 4],
+              size: 1,
+            },
+            text: {
+              show: true,
+              color: "#000000",
+              size: 11,
+              weight: "bold",
+              paddingLeft: 6,
+              paddingRight: 6,
+              paddingTop: 2,
+              paddingBottom: 2,
+              borderRadius: 4,
+            }
+          }
         }
       }
     };
