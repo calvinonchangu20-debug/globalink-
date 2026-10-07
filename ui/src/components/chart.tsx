@@ -154,12 +154,16 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
 
     let activeWs: WebSocket | null = null;
     let currentBar: any = null;
+    let plateauTimer: any = null;
 
     chart.setDataLoader({
       getBars: ({ type, symbol: klineSymbol, callback }) => {
         if (type === 'init') {
-          // VERY IMPORTANT: Reset currentBar when symbol changes to prevent race conditions 
-          // where the new WebSocket connects before the fetch finishes and merges with the old symbol's price!
+          // VERY IMPORTANT: Reset currentBar and plateau timer when symbol changes
+          if (plateauTimer) {
+            clearTimeout(plateauTimer);
+            plateauTimer = null;
+          }
           currentBar = null;
           
           const ticker = klineSymbol.ticker;
@@ -168,26 +172,53 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
           fetch(url)
             .then((r) => r.json())
             .then((data) => {
-              // PREVENT RACE CONDITION: If the user switched symbols while this fetch was in flight,
-              // ignore this data entirely so it doesn't corrupt the new symbol's chart!
               if (chartRef.current?.getSymbol()?.ticker !== ticker) {
                 return;
               }
 
-              if (data.ticks) {
-                const bars = data.ticks.map((t: any) => ({
-                  timestamp: t.time * 1000,
-                  open: t.value,
-                  high: t.value,
-                  low: t.value,
-                  close: t.value,
-                }));
+              if (data.ticks && data.ticks.length > 0) {
+                const bars: any[] = [];
+                data.ticks.forEach((t: any, idx: number) => {
+                  const baseTime = t.time * 1000;
+                  const nextTick = data.ticks[idx + 1];
+                  const dt = nextTick ? (nextTick.time - t.time) * 1000 : 1000;
+
+                  // 1. Initial tick price arrival
+                  bars.push({
+                    timestamp: baseTime,
+                    open: t.value,
+                    high: t.value,
+                    low: t.value,
+                    close: t.value,
+                  });
+
+                  // 2. Stepped plateau hold: horizontal shelf before transition
+                  bars.push({
+                    timestamp: baseTime + Math.min(500, Math.floor(dt * 0.55)),
+                    open: t.value,
+                    high: t.value,
+                    low: t.value,
+                    close: t.value,
+                  });
+
+                  // For 2-second or slower indices, add another plateau anchor
+                  if (dt >= 1800) {
+                    bars.push({
+                      timestamp: baseTime + Math.floor(dt * 0.8),
+                      open: t.value,
+                      high: t.value,
+                      low: t.value,
+                      close: t.value,
+                    });
+                  }
+                });
+
                 if (bars.length > 0) currentBar = { ...bars[bars.length - 1] };
                 callback(bars, { forward: false, backward: false });
                 
                 // Force zoom level AFTER auto-fit completes (50ms buffer for render)
                 setTimeout(() => {
-                  chart.setBarSpace(20);
+                  chart.setBarSpace(14);
                   chart.scrollToRealTime();
                 }, 50);
               } else {
@@ -209,37 +240,62 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
         
         activeWs.onmessage = (e) => {
           try {
-            // PREVENT RACE CONDITION: Ignore ticks from old websockets that haven't fully closed yet
             if (chartRef.current?.getSymbol()?.ticker !== ticker) return;
 
             const tick = JSON.parse(e.data) as { time: number; value: number };
             if (typeof tick.value !== "number" || typeof tick.time !== "number") return;
             
-            const tickTime = tick.time;
-            const candleTime = Math.floor(tickTime / GRANULARITY) * GRANULARITY;
-            const timestamp = candleTime * 1000;
-            
-            if (!currentBar || timestamp > currentBar.timestamp) {
-              currentBar = {
-                timestamp,
+            // Clear any active plateau timer when new tick arrives
+            if (plateauTimer) {
+              clearTimeout(plateauTimer);
+              plateauTimer = null;
+            }
+
+            const baseTime = tick.time * 1000;
+
+            // 1. Emit new tick price level immediately
+            currentBar = {
+              timestamp: baseTime,
+              open: tick.value,
+              high: tick.value,
+              low: tick.value,
+              close: tick.value,
+            };
+            callback(currentBar);
+
+            // 2. Advance horizontal plateau while holding price at current level
+            plateauTimer = setTimeout(() => {
+              if (chartRef.current?.getSymbol()?.ticker !== ticker) return;
+              callback({
+                timestamp: baseTime + 500,
                 open: tick.value,
                 high: tick.value,
                 low: tick.value,
                 close: tick.value,
-              };
-            } else {
-              currentBar.high = Math.max(currentBar.high, tick.value);
-              currentBar.low = Math.min(currentBar.low, tick.value);
-              currentBar.close = tick.value;
-            }
-            
-            callback(currentBar);
+              });
+
+              // Extend plateau further for 2s indices or slower arrival
+              plateauTimer = setTimeout(() => {
+                if (chartRef.current?.getSymbol()?.ticker !== ticker) return;
+                callback({
+                  timestamp: baseTime + 1200,
+                  open: tick.value,
+                  high: tick.value,
+                  low: tick.value,
+                  close: tick.value,
+                });
+              }, 600);
+            }, 450);
           } catch (err) {
             console.error("Chart ws error", err);
           }
         };
       },
       unsubscribeBar: () => {
+        if (plateauTimer) {
+          clearTimeout(plateauTimer);
+          plateauTimer = null;
+        }
         if (activeWs) {
           activeWs.close();
           activeWs = null;
@@ -256,6 +312,7 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
 
     return () => {
       resizeObserver.disconnect();
+      if (plateauTimer) clearTimeout(plateauTimer);
       if (activeWs) activeWs.close();
       if (chartRef.current) {
         dispose(containerRef.current!);
