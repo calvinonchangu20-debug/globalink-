@@ -60,10 +60,10 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
           showRule: "none" as any, // Disables OHLC legend clutter completely!
         },
         area: {
-          lineSize: 3,
+          lineSize: 2.5,
           lineColor: "#39FF14",
           value: "close",
-          smooth: true,
+          smooth: 0.2 as any, // gentle natural rounding, not exaggerated spline and not boxy
           backgroundColor: chartStyle === "line" 
             ? "transparent" 
             : [
@@ -153,16 +153,10 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
 
     let activeWs: WebSocket | null = null;
     let currentBar: any = null;
-    let plateauTimer: any = null;
 
     chart.setDataLoader({
       getBars: ({ type, symbol: klineSymbol, callback }) => {
         if (type === 'init') {
-          // VERY IMPORTANT: Reset currentBar and plateau timer when symbol changes
-          if (plateauTimer) {
-            clearTimeout(plateauTimer);
-            plateauTimer = null;
-          }
           currentBar = null;
           
           const ticker = klineSymbol.ticker;
@@ -176,48 +170,20 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
               }
 
               if (data.ticks && data.ticks.length > 0) {
-                const bars: any[] = [];
-                data.ticks.forEach((t: any, idx: number) => {
-                  const baseTime = t.time * 1000;
-                  const nextTick = data.ticks[idx + 1];
-                  const dt = nextTick ? (nextTick.time - t.time) * 1000 : 1000;
+                const bars = data.ticks.map((t: any) => ({
+                  timestamp: t.time * 1000,
+                  open: t.value,
+                  high: t.value,
+                  low: t.value,
+                  close: t.value,
+                }));
 
-                  // 1. Initial tick price arrival
-                  bars.push({
-                    timestamp: baseTime,
-                    open: t.value,
-                    high: t.value,
-                    low: t.value,
-                    close: t.value,
-                  });
-
-                  // 2. Stepped plateau hold: horizontal shelf before transition
-                  bars.push({
-                    timestamp: baseTime + Math.min(500, Math.floor(dt * 0.55)),
-                    open: t.value,
-                    high: t.value,
-                    low: t.value,
-                    close: t.value,
-                  });
-
-                  // For 2-second or slower indices, add another plateau anchor
-                  if (dt >= 1800) {
-                    bars.push({
-                      timestamp: baseTime + Math.floor(dt * 0.8),
-                      open: t.value,
-                      high: t.value,
-                      low: t.value,
-                      close: t.value,
-                    });
-                  }
-                });
-
-                if (bars.length > 0) currentBar = { ...bars[bars.length - 1] };
+                currentBar = { ...bars[bars.length - 1] };
                 callback(bars, { forward: false, backward: false });
                 
-                // Force zoom level AFTER auto-fit completes (50ms buffer for render)
+                // Show ~80-100 bars across the chart to display 2-3 full wave cycles matching Deriv
                 setTimeout(() => {
-                  chart.setBarSpace(14);
+                  chart.setBarSpace(8);
                   chart.scrollToRealTime();
                 }, 50);
               } else {
@@ -244,57 +210,22 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
             const tick = JSON.parse(e.data) as { time: number; value: number };
             if (typeof tick.value !== "number" || typeof tick.time !== "number") return;
             
-            // Clear any active plateau timer when new tick arrives
-            if (plateauTimer) {
-              clearTimeout(plateauTimer);
-              plateauTimer = null;
-            }
+            const timestamp = tick.time * 1000;
 
-            const baseTime = tick.time * 1000;
-
-            // 1. Emit new tick price level immediately
             currentBar = {
-              timestamp: baseTime,
+              timestamp,
               open: tick.value,
               high: tick.value,
               low: tick.value,
               close: tick.value,
             };
             callback(currentBar);
-
-            // 2. Advance horizontal plateau while holding price at current level
-            plateauTimer = setTimeout(() => {
-              if (chartRef.current?.getSymbol()?.ticker !== ticker) return;
-              callback({
-                timestamp: baseTime + 500,
-                open: tick.value,
-                high: tick.value,
-                low: tick.value,
-                close: tick.value,
-              });
-
-              // Extend plateau further for 2s indices or slower arrival
-              plateauTimer = setTimeout(() => {
-                if (chartRef.current?.getSymbol()?.ticker !== ticker) return;
-                callback({
-                  timestamp: baseTime + 1200,
-                  open: tick.value,
-                  high: tick.value,
-                  low: tick.value,
-                  close: tick.value,
-                });
-              }, 600);
-            }, 450);
           } catch (err) {
             console.error("Chart ws error", err);
           }
         };
       },
       unsubscribeBar: () => {
-        if (plateauTimer) {
-          clearTimeout(plateauTimer);
-          plateauTimer = null;
-        }
         if (activeWs) {
           activeWs.close();
           activeWs = null;
@@ -311,7 +242,6 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
 
     return () => {
       resizeObserver.disconnect();
-      if (plateauTimer) clearTimeout(plateauTimer);
       if (activeWs) activeWs.close();
       if (chartRef.current) {
         dispose(containerRef.current!);
