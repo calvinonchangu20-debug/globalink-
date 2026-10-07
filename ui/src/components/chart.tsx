@@ -7,7 +7,6 @@ import { AreaChart, LineChart, CandlestickChart } from "lucide-react";
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
 const WS_BASE = import.meta.env.VITE_WS_URL || "ws://localhost:3001";
-const GRANULARITY = 1;
 const CANDLE_COUNT = 300; // Fetch enough history to scroll, but we will force zoom level to 40 bars
 
 function isDarkTheme(theme: string): boolean {
