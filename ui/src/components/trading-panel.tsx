@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react"
 import { Button } from "@/components/ui/button"
 import { useTrades } from "@/hooks/use-trades"
 import { useWallet } from "@/hooks/use-wallet"
+import { useAccount } from "@/contexts/AccountContext"
 import { WinModal } from "@/components/win-modal"
 import {  Minus, Plus, Target, AlertTriangle, Zap, Square } from "lucide-react"
 
@@ -26,7 +27,8 @@ export function TradingPanel({
   category: externalCategory,
 }: TradingPanelProps) {
   const { placeTrade, placing, closedTrades } = useTrades()
-  const { refetch: refetchWallet } = useWallet()
+  const { wallet, refetch: refetchWallet } = useWallet()
+  const { accountType, isDemo, demoBalance } = useAccount()
 
   const [mode, setMode] = useState<Mode>("AUTO")
   const category = externalCategory ?? "even_odd"
@@ -113,17 +115,32 @@ export function TradingPanel({
       return
     }
 
+    const availableBalance = isDemo ? demoBalance : (wallet?.balance ?? 0)
+    if (availableBalance < currentStake) {
+      setTradeMessage({
+        text: isDemo
+          ? `Insufficient demo balance ($${demoBalance.toFixed(2)}). Reset demo funds to continue.`
+          : `Insufficient real balance ($${(wallet?.balance ?? 0).toFixed(2)}). Please deposit to continue.`,
+        type: "error"
+      })
+      return
+    }
+
     const res = await placeTrade({
       symbol,
       type: selectedType,
       stake: Number(currentStake.toFixed(2)),
       durationSeconds: 1, // Fast 1-tick resolution
+      accountType,
     })
 
     if (res.success && res.trade) {
       lastManualPlacedId.current = res.trade.id
-      refetchWallet()
-      setTradeMessage({ text: `Placed ${selectedType.toUpperCase()} order ($${currentStake.toFixed(2)})`, type: "success" })
+      if (!isDemo) refetchWallet()
+      setTradeMessage({
+        text: `Placed ${selectedType.toUpperCase()} order ($${currentStake.toFixed(2)})${isDemo ? " [DEMO]" : ""}`,
+        type: "success"
+      })
     } else {
       setTradeMessage({ text: res.error || "Execution failed", type: "error" })
     }
@@ -139,6 +156,17 @@ export function TradingPanel({
   const startBot = async (type: "even" | "odd" | "match" | "differ") => {
     if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current)
     
+    const availableBalance = isDemo ? demoBalance : (wallet?.balance ?? 0)
+    if (availableBalance < stake) {
+      setTradeMessage({
+        text: isDemo
+          ? `Insufficient demo balance ($${demoBalance.toFixed(2)}) for bot stake.`
+          : `Insufficient real balance ($${(wallet?.balance ?? 0).toFixed(2)}) for bot stake.`,
+        type: "error"
+      })
+      return
+    }
+
     // Seed lastProcessedTradeId with the latest historical trade so old trades aren't re-processed
     if (closedTrades.length > 0) {
       lastProcessedTradeId.current = closedTrades[0].id
@@ -167,11 +195,12 @@ export function TradingPanel({
       type,
       stake: Number(stake.toFixed(2)),
       durationSeconds: 1,
+      accountType,
     })
 
     if (!firstRes.success) {
       stopBot(firstRes.error || "Failed starting bot")
-    } else {
+    } else if (!isDemo) {
       refetchWallet()
     }
   }
@@ -244,10 +273,11 @@ export function TradingPanel({
             type: botTradeType,
             stake: Number(nextStake.toFixed(2)),
             durationSeconds: 1,
+            accountType,
           }).then((res) => {
             if (!res.success) {
               stopBot(res.error || "Failed placing bot trade")
-            } else {
+            } else if (!isDemo) {
               refetchWallet()
             }
           })
@@ -274,7 +304,14 @@ export function TradingPanel({
     return () => {
       if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current)
     }
-  }, [closedTrades, isBotRunning])
+  }, [closedTrades, isBotRunning, accountType, isDemo, symbol, botTradeType, multiplier, placeTrade, refetchWallet])
+
+  // Automatically halt running bot if user switches between Real and Demo accounts
+  useEffect(() => {
+    if (isBotRunning) {
+      stopBot("Account type switched")
+    }
+  }, [accountType])
 
   const Container = inlineMobile ? "div" : "aside"
 

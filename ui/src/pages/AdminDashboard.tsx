@@ -15,7 +15,11 @@ import {
   SlidersHorizontal,
   Save,
   CheckCircle2,
-  Banknote
+  Banknote,
+  MoreVertical,
+  PlusCircle,
+  Wallet,
+  X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
@@ -110,6 +114,30 @@ export default function AdminDashboard() {
     newRole: "USER" | "ADMIN";
   } | null>(null);
   const [isUpdatingRole, setIsUpdatingRole] = useState(false);
+
+  // Action Menu & Balance Increase State
+  const [openActionMenuUserId, setOpenActionMenuUserId] = useState<string | null>(null);
+  const [selectedUserForBalance, setSelectedUserForBalance] = useState<AdminUser | null>(null);
+  const [balanceIncreaseAmount, setBalanceIncreaseAmount] = useState<string>("");
+  const [balanceIncreaseReason, setBalanceIncreaseReason] = useState<string>("");
+  const [isIncreasingBalance, setIsIncreasingBalance] = useState<boolean>(false);
+  const [balanceModalError, setBalanceModalError] = useState<string | null>(null);
+  const [balanceSuccessAlert, setBalanceSuccessAlert] = useState<string | null>(null);
+  const actionMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (actionMenuRef.current && !actionMenuRef.current.contains(event.target as Node)) {
+        setOpenActionMenuUserId(null);
+      }
+    };
+    if (openActionMenuUserId) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [openActionMenuUserId]);
 
   // Filters State
   const [userSearch, setUserSearch] = useState("");
@@ -253,6 +281,81 @@ export default function AdminDashboard() {
     } finally {
       setIsUpdatingRole(false);
     }
+  };
+
+  const handleIncreaseBalanceSubmit = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!token || !selectedUserForBalance) return;
+
+    const num = parseFloat(balanceIncreaseAmount);
+    if (!Number.isFinite(num) || num <= 0) {
+      setBalanceModalError("Please enter a valid amount greater than $0.00 USD");
+      return;
+    }
+    if (num > 1000000) {
+      setBalanceModalError("Maximum amount allowed in a single operation is $1,000,000 USD");
+      return;
+    }
+
+    setIsIncreasingBalance(true);
+    setBalanceModalError(null);
+
+    try {
+      const res = await apiFetch(`/api/admin/users/${selectedUserForBalance.id}/balance`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount: num,
+          reason: balanceIncreaseReason.trim() || undefined,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setBalanceModalError(data.error || "Failed to increase user balance");
+      } else {
+        const newBalance = data.user?.balance ?? (parseFloat(selectedUserForBalance.balance || "0") + num).toFixed(2);
+
+        // Update user in usersList immediately
+        setUsersList((prev) =>
+          prev.map((u) => (u.id === selectedUserForBalance.id ? { ...u, balance: newBalance } : u))
+        );
+
+        // Update txList if transaction record returned
+        if (data.transaction) {
+          setTxList((prev) => [
+            {
+              ...data.transaction,
+              username: selectedUserForBalance.username,
+              userEmail: selectedUserForBalance.email,
+            },
+            ...prev,
+          ]);
+        }
+
+        const successMsg = `Successfully credited +$${num.toFixed(2)} USD to @${selectedUserForBalance.username}'s real account. New balance: $${parseFloat(newBalance).toFixed(2)}`;
+        setBalanceSuccessAlert(successMsg);
+        setTimeout(() => setBalanceSuccessAlert(null), 6000);
+
+        setSelectedUserForBalance(null);
+        setBalanceIncreaseAmount("");
+        setBalanceIncreaseReason("");
+        fetchAdminData();
+      }
+    } catch (err: any) {
+      setBalanceModalError(err.message || "Failed to increase user balance");
+    } finally {
+      setIsIncreasingBalance(false);
+    }
+  };
+
+  const addPresetAmount = (presetVal: number) => {
+    const current = parseFloat(balanceIncreaseAmount) || 0;
+    const next = (current + presetVal).toFixed(2);
+    setBalanceIncreaseAmount(next);
+    setBalanceModalError(null);
   };
 
   if (user?.role !== "ADMIN") {
@@ -501,6 +604,22 @@ export default function AdminDashboard() {
 
           return (
             <div className="space-y-4">
+              {/* Success Notification Alert */}
+              {balanceSuccessAlert && (
+                <div className="bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 px-4 py-3 rounded-xl text-xs flex items-center justify-between shadow-sm animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-500" />
+                    <span className="font-medium">{balanceSuccessAlert}</span>
+                  </div>
+                  <button
+                    onClick={() => setBalanceSuccessAlert(null)}
+                    className="text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+
               {/* Filter Toolbar */}
               <div className="bg-card border rounded-xl p-3.5 flex flex-col sm:flex-row gap-3 items-center justify-between shadow-sm">
                 <div className="w-full sm:w-80 relative">
@@ -530,7 +649,7 @@ export default function AdminDashboard() {
               </div>
 
               {/* Table */}
-              <div className="bg-card border rounded-xl overflow-hidden shadow-sm">
+              <div className="bg-card border rounded-xl overflow-visible shadow-sm min-h-[300px]">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead className="bg-muted/50 border-b text-xs font-semibold uppercase text-muted-foreground">
@@ -540,6 +659,7 @@ export default function AdminDashboard() {
                         <th className="px-4 py-3">Role</th>
                         <th className="px-4 py-3">Balance</th>
                         <th className="px-4 py-3">Registered</th>
+                        <th className="px-4 py-3 text-right">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
@@ -564,15 +684,141 @@ export default function AdminDashboard() {
                               <option value="ADMIN" className="bg-card text-foreground">ADMIN</option>
                             </select>
                           </td>
-                          <td className="px-4 py-3 font-semibold">${parseFloat(u.balance || "0").toFixed(2)}</td>
+                          <td className="px-4 py-3 font-semibold text-emerald-600 dark:text-emerald-400 font-mono">
+                            ${parseFloat(u.balance || "0").toFixed(2)}
+                          </td>
                           <td className="px-4 py-3 text-xs text-muted-foreground">
                             {new Date(u.createdAt).toLocaleDateString()}
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              {/* Quick Top-up Button */}
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => {
+                                  setOpenActionMenuUserId(null);
+                                  setSelectedUserForBalance(u);
+                                  setBalanceIncreaseAmount("");
+                                  setBalanceIncreaseReason("");
+                                  setBalanceModalError(null);
+                                }}
+                                title="Increase Real Balance"
+                                className="h-7 px-2 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:bg-emerald-500/10 border-emerald-500/30 gap-1 hidden sm:inline-flex cursor-pointer"
+                              >
+                                <PlusCircle className="h-3.5 w-3.5" />
+                                <span>Increase</span>
+                              </Button>
+
+                              {/* Action Menu Dropdown */}
+                              <div
+                                className="relative inline-block text-left"
+                                ref={openActionMenuUserId === u.id ? actionMenuRef : undefined}
+                              >
+                                <Button
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setOpenActionMenuUserId(openActionMenuUserId === u.id ? null : u.id);
+                                  }}
+                                  className="h-7 w-7 p-0 hover:bg-muted cursor-pointer"
+                                  title="Actions menu"
+                                >
+                                  <MoreVertical className="h-4 w-4 text-muted-foreground" />
+                                </Button>
+
+                                {openActionMenuUserId === u.id && (
+                                  <div className="absolute right-0 mt-1 w-56 rounded-xl bg-card border shadow-xl z-30 py-1.5 animate-in fade-in zoom-in-95 text-left">
+                                    <div className="px-3 py-1.5 border-b mb-1">
+                                      <p className="text-[11px] font-semibold text-foreground truncate">{u.firstName} {u.secondName}</p>
+                                      <p className="text-[10px] text-muted-foreground truncate">@{u.username} • ${parseFloat(u.balance || "0").toFixed(2)} USD</p>
+                                    </div>
+
+                                    {/* Primary Action: Increase Real Balance */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenActionMenuUserId(null);
+                                        setSelectedUserForBalance(u);
+                                        setBalanceIncreaseAmount("");
+                                        setBalanceIncreaseReason("");
+                                        setBalanceModalError(null);
+                                      }}
+                                      className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-emerald-500/10 text-foreground transition-colors group cursor-pointer"
+                                    >
+                                      <div className="p-1 rounded-md bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
+                                        <PlusCircle className="h-4 w-4" />
+                                      </div>
+                                      <div>
+                                        <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                          Increase Real Balance
+                                        </div>
+                                        <div className="text-[10px] text-muted-foreground">Add funds to user wallet</div>
+                                      </div>
+                                    </button>
+
+                                    <div className="h-px bg-border my-1" />
+
+                                    {/* View User's Trades */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenActionMenuUserId(null);
+                                        setTradeSearch(u.username);
+                                        setTab("trades");
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-muted text-foreground transition-colors cursor-pointer"
+                                    >
+                                      <TrendingUp className="h-3.5 w-3.5 text-muted-foreground" />
+                                      <span>View User Trades</span>
+                                    </button>
+
+                                    {/* View User's Ledger Transactions */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenActionMenuUserId(null);
+                                        setTxSearch(u.username);
+                                        setTab("finances");
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-muted text-foreground transition-colors cursor-pointer"
+                                    >
+                                      <Banknote className="h-3.5 w-3.5 text-muted-foreground" />
+                                      <span>View User Transactions</span>
+                                    </button>
+
+                                    {/* Quick Role Toggle */}
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setOpenActionMenuUserId(null);
+                                        handleRoleSelectChange(u, u.role === "ADMIN" ? "USER" : "ADMIN");
+                                      }}
+                                      className="w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-muted text-foreground transition-colors cursor-pointer"
+                                    >
+                                      {u.role === "ADMIN" ? (
+                                        <>
+                                          <ShieldAlert className="h-3.5 w-3.5 text-amber-500" />
+                                          <span>Demote to USER</span>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <ShieldCheck className="h-3.5 w-3.5 text-purple-500" />
+                                          <span>Promote to ADMIN</span>
+                                        </>
+                                      )}
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
                           </td>
                         </tr>
                       ))}
                       {filteredUsers.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-4 py-8 text-center text-xs text-muted-foreground">
+                          <td colSpan={6} className="px-4 py-8 text-center text-xs text-muted-foreground">
                             No users match the filter criteria.
                           </td>
                         </tr>
@@ -1025,6 +1271,213 @@ export default function AdminDashboard() {
           </div>
         </div>
       )}
+
+      {/* Increase User Real Balance Modal */}
+      {selectedUserForBalance && (() => {
+        const activeSelectedUser = usersList.find((u) => u.id === selectedUserForBalance.id) || selectedUserForBalance;
+        const currentBal = parseFloat(activeSelectedUser.balance || "0");
+        const parsedIncrease = parseFloat(balanceIncreaseAmount);
+        const isValidIncrease = Number.isFinite(parsedIncrease) && parsedIncrease > 0;
+        const projectedBal = isValidIncrease ? (currentBal + parsedIncrease).toFixed(2) : currentBal.toFixed(2);
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in">
+            <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5 animate-in zoom-in-95">
+              {/* Header */}
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500">
+                    <Wallet className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-base">Increase Real Balance</h3>
+                    <p className="text-xs text-muted-foreground">Credit funds directly to user's real account</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isIncreasingBalance) setSelectedUserForBalance(null);
+                  }}
+                  disabled={isIncreasingBalance}
+                  className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors cursor-pointer"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+
+              {/* User Information Card */}
+              <div className="bg-muted/40 border rounded-xl p-3.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <span className="font-semibold text-sm">
+                      {activeSelectedUser.firstName} {activeSelectedUser.secondName}
+                    </span>
+                    <span className="text-xs text-muted-foreground ml-1.5 font-mono">
+                      (@{activeSelectedUser.username})
+                    </span>
+                  </div>
+                  <span
+                    className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                      activeSelectedUser.role === "ADMIN"
+                        ? "bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/30"
+                        : "bg-muted text-muted-foreground border"
+                    }`}
+                  >
+                    {activeSelectedUser.role}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs pt-1 border-t border-border/60">
+                  <span className="text-muted-foreground font-mono truncate max-w-[200px]">
+                    {activeSelectedUser.email}
+                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-muted-foreground">Current Balance:</span>
+                    <span className="font-bold font-mono text-emerald-600 dark:text-emerald-400">
+                      ${currentBal.toFixed(2)} USD
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Form */}
+              <form onSubmit={handleIncreaseBalanceSubmit} className="space-y-4">
+                {/* Amount Input */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground flex items-center justify-between">
+                    <span>Amount to Add (USD) *</span>
+                    <span className="text-[11px] text-muted-foreground font-normal">Min $0.01 • Max $1,000,000</span>
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-muted-foreground font-bold font-mono">
+                      $
+                    </div>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0.01"
+                      max="1000000"
+                      placeholder="0.00"
+                      value={balanceIncreaseAmount}
+                      onChange={(e) => {
+                        setBalanceIncreaseAmount(e.target.value);
+                        setBalanceModalError(null);
+                      }}
+                      disabled={isIncreasingBalance}
+                      autoFocus
+                      className="w-full bg-muted/50 border rounded-xl pl-8 pr-4 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
+                    />
+                  </div>
+
+                  {/* Preset Amount Chips */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[11px] text-muted-foreground mr-1">Presets:</span>
+                    {[10, 25, 50, 100, 250, 500].map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        onClick={() => addPresetAmount(preset)}
+                        disabled={isIncreasingBalance}
+                        className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 border transition-colors cursor-pointer"
+                      >
+                        +${preset}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Real-time Calculation Summary Card */}
+                <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3 text-xs space-y-1.5">
+                  <div className="flex justify-between text-muted-foreground">
+                    <span>Current Real Balance:</span>
+                    <span className="font-mono">${currentBal.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-medium">
+                    <span>Credit to Add:</span>
+                    <span className="font-mono">
+                      +${isValidIncrease ? parsedIncrease.toFixed(2) : "0.00"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between items-center pt-1.5 border-t border-emerald-500/20 text-sm font-bold">
+                    <span className="text-foreground">Projected Real Balance:</span>
+                    <span className="text-emerald-600 dark:text-emerald-400 font-mono text-base">
+                      ${projectedBal} USD
+                    </span>
+                  </div>
+                </div>
+
+                {/* Reason / Audit Note */}
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-foreground flex items-center justify-between">
+                    <span>Reason / Audit Note (Optional)</span>
+                    <span className="text-[11px] text-muted-foreground font-normal">Stored in ledger</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Deposit top-up, promotional bonus, adjustment..."
+                    value={balanceIncreaseReason}
+                    onChange={(e) => setBalanceIncreaseReason(e.target.value)}
+                    disabled={isIncreasingBalance}
+                    className="w-full bg-muted/50 border rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <div className="flex flex-wrap gap-1.5 pt-0.5">
+                    {["Admin deposit", "Promotional Bonus", "Dispute Resolution", "Manual adjustment"].map((tag) => (
+                      <button
+                        key={tag}
+                        type="button"
+                        onClick={() => setBalanceIncreaseReason(tag)}
+                        disabled={isIncreasingBalance}
+                        className="text-[10px] text-muted-foreground hover:text-foreground px-2 py-0.5 rounded bg-muted/60 hover:bg-muted border transition-colors cursor-pointer"
+                      >
+                        {tag}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Error Message */}
+                {balanceModalError && (
+                  <div className="bg-red-500/10 border border-red-500/20 text-red-500 rounded-xl p-3 text-xs flex items-center gap-2">
+                    <AlertTriangle className="h-4 w-4 shrink-0" />
+                    <span>{balanceModalError}</span>
+                  </div>
+                )}
+
+                {/* Modal Buttons */}
+                <div className="flex items-center justify-end gap-3 pt-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setSelectedUserForBalance(null)}
+                    disabled={isIncreasingBalance}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="submit"
+                    disabled={
+                      isIncreasingBalance ||
+                      !balanceIncreaseAmount ||
+                      !(parseFloat(balanceIncreaseAmount) > 0)
+                    }
+                    className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 font-semibold cursor-pointer"
+                  >
+                    {isIncreasingBalance ? (
+                      <>
+                        <RefreshCw className="h-4 w-4 animate-spin" /> Crediting...
+                      </>
+                    ) : (
+                      <>
+                        <PlusCircle className="h-4 w-4" /> Credit ${isValidIncrease ? parsedIncrease.toFixed(2) : "0.00"}
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </form>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }

@@ -17,16 +17,14 @@ import {
   Smartphone,
   ChevronRight,
   FlaskConical,
+  RotateCcw,
   Coins,
   Copy,
   Check,
 } from "lucide-react"
+import { useAccount } from "@/contexts/AccountContext"
 
 const API_BASE = import.meta.env.VITE_API_URL || "http://localhost:3001";
-
-// ─── Account type ─────────────────────────────────────────────────────────────
-
-type AccountType = "demo" | "real"
 
 // ─── Payment Method Modal ─────────────────────────────────────────────────────
 
@@ -678,6 +676,7 @@ function TxRow({ tx }: { tx: Transaction }) {
 
 export function WalletPanel() {
   const { wallet, loading, error, refetch } = useWallet()
+  const { isDemo, setAccountType } = useAccount()
   const [showAll, setShowAll] = useState(false)
   const [showDeposit, setShowDeposit] = useState(false)
   const [showWithdraw, setShowWithdraw] = useState(false)
@@ -690,6 +689,24 @@ export function WalletPanel() {
     <div className="flex flex-col gap-3">
       {showDeposit && <PaymentModal onClose={() => setShowDeposit(false)} />}
       {showWithdraw && <WithdrawModal onClose={() => setShowWithdraw(false)} />}
+
+      {isDemo && (
+        <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-2.5 text-xs flex flex-col gap-1.5">
+          <div className="flex items-center gap-1.5 font-bold text-amber-600 dark:text-amber-400">
+            <FlaskConical className="h-3.5 w-3.5" /> Demo Account Active
+          </div>
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            Deposit & withdrawal ledger applies to your Real Account.
+          </p>
+          <button
+            type="button"
+            onClick={() => setAccountType("real")}
+            className="text-[11px] font-semibold text-emerald-600 dark:text-emerald-400 hover:underline text-left mt-0.5 cursor-pointer"
+          >
+            Switch to Real Account →
+          </button>
+        </div>
+      )}
 
       {/* Quick Action Wallet Controls */}
       <div className="grid grid-cols-2 gap-2 p-1 bg-muted/40 rounded-xl border">
@@ -778,7 +795,7 @@ export function WalletPanel() {
 
 export function BalanceBadge() {
   const { wallet, loading } = useWallet()
-  const [accountType, setAccountType] = useState<AccountType>("real")
+  const { accountType, setAccountType, demoBalance, resetDemoBalance } = useAccount()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
 
@@ -793,12 +810,10 @@ export function BalanceBadge() {
     return () => document.removeEventListener("mousedown", handleClick)
   }, [])
 
-  const demoBalance = 10000 // fixed demo balance
-
   const displayBalance =
     accountType === "demo"
-      ? demoBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })
-      : (wallet?.balance ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2 })
+      ? demoBalance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : (wallet?.balance ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
   return (
     <div ref={ref} className="relative shrink-0">
@@ -830,15 +845,17 @@ export function BalanceBadge() {
 
       {/* Dropdown */}
       {open && (
-        <div className="absolute right-0 top-full mt-1.5 w-52 bg-card border rounded-xl shadow-xl overflow-hidden z-50">
-          <div className="px-3 py-2 border-b">
+        <div className="absolute right-0 top-full mt-1.5 w-56 bg-card border rounded-xl shadow-xl overflow-hidden z-50">
+          <div className="px-3 py-2 border-b flex items-center justify-between">
             <p className="text-[10px] text-muted-foreground uppercase tracking-wider font-semibold">Switch Account</p>
+            <span className="text-[10px] font-mono text-muted-foreground">USD</span>
           </div>
+
           {/* Real account option */}
           <button
             onClick={() => { setAccountType("real"); setOpen(false) }}
             className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-muted transition-colors
-              ${accountType === "real" ? "bg-emerald-500/5" : ""}`}
+              ${accountType === "real" ? "bg-emerald-500/10 font-medium" : ""}`}
           >
             <div className="bg-emerald-500/10 p-1.5 rounded-md">
               <Wallet className="h-3.5 w-3.5 text-emerald-500" />
@@ -847,36 +864,55 @@ export function BalanceBadge() {
               <div className="flex items-center gap-1.5">
                 <span className="text-xs font-semibold">Real Account</span>
                 {accountType === "real" && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 shrink-0" />
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" />
                 )}
               </div>
-              <span className="text-[10px] text-muted-foreground">
+              <span className="text-[10px] font-mono font-bold text-emerald-600 dark:text-emerald-400">
                 ${(wallet?.balance ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2 })}
               </span>
             </div>
           </button>
 
           {/* Demo account option */}
-          <button
-            onClick={() => { setAccountType("demo"); setOpen(false) }}
-            className={`w-full flex items-center gap-3 px-3 py-2.5 text-left hover:bg-muted transition-colors
-              ${accountType === "demo" ? "bg-amber-500/5" : ""}`}
-          >
-            <div className="bg-amber-500/10 p-1.5 rounded-md">
-              <FlaskConical className="h-3.5 w-3.5 text-amber-500" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
-                <span className="text-xs font-semibold">Demo Account</span>
-                {accountType === "demo" && (
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0" />
-                )}
+          <div className={`px-3 py-2.5 border-t border-border/50 transition-colors
+            ${accountType === "demo" ? "bg-amber-500/10" : "hover:bg-muted/50"}`}>
+            <div 
+              onClick={() => { setAccountType("demo"); setOpen(false) }}
+              className="flex items-center gap-3 cursor-pointer"
+            >
+              <div className="bg-amber-500/10 p-1.5 rounded-md">
+                <FlaskConical className="h-3.5 w-3.5 text-amber-500" />
               </div>
-              <span className="text-[10px] text-muted-foreground">
-                ${demoBalance.toLocaleString("en-US", { minimumFractionDigits: 2 })} (virtual)
-              </span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold">Demo Account</span>
+                  {accountType === "demo" && (
+                    <span className="h-2 w-2 rounded-full bg-amber-500 shrink-0" />
+                  )}
+                </div>
+                <span className="text-[10px] font-mono font-bold text-amber-600 dark:text-amber-400">
+                  ${demoBalance.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (virtual)
+                </span>
+              </div>
             </div>
-          </button>
+
+            {/* Quick Reset Demo Balance */}
+            <div className="mt-2 pt-2 border-t border-border/30 flex justify-between items-center">
+              <span className="text-[10px] text-muted-foreground">Practice funds</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  resetDemoBalance();
+                }}
+                className="text-[10px] text-amber-600 dark:text-amber-400 hover:text-amber-500 font-semibold flex items-center gap-1 hover:underline cursor-pointer"
+                title="Reset demo balance back to $10,000.00"
+              >
+                <RotateCcw className="h-2.5 w-2.5" />
+                Reset ($10k)
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
