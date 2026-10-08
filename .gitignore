@@ -51,4 +51,6 @@ Thumbs.db
 .omo/
 skills-lock.json
 *.png
+!ui/public/*.png
+!ui/public/**/*.png
 test-*.cjs

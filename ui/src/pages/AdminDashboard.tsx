@@ -18,7 +18,8 @@ import {
   Banknote,
   MoreVertical,
   PlusCircle,
-  Wallet,
+  MinusCircle,
+  Pencil,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -115,12 +116,13 @@ export default function AdminDashboard() {
   } | null>(null);
   const [isUpdatingRole, setIsUpdatingRole] = useState(false);
 
-  // Action Menu & Balance Increase State
+  // Action Menu & Balance Edit State
   const [openActionMenuUserId, setOpenActionMenuUserId] = useState<string | null>(null);
   const [selectedUserForBalance, setSelectedUserForBalance] = useState<AdminUser | null>(null);
-  const [balanceIncreaseAmount, setBalanceIncreaseAmount] = useState<string>("");
-  const [balanceIncreaseReason, setBalanceIncreaseReason] = useState<string>("");
-  const [isIncreasingBalance, setIsIncreasingBalance] = useState<boolean>(false);
+  const [balanceEditMode, setBalanceEditMode] = useState<"set" | "add" | "subtract">("set");
+  const [balanceEditValue, setBalanceEditValue] = useState<string>("");
+  const [balanceEditReason, setBalanceEditReason] = useState<string>("");
+  const [isUpdatingBalance, setIsUpdatingBalance] = useState<boolean>(false);
   const [balanceModalError, setBalanceModalError] = useState<string | null>(null);
   const [balanceSuccessAlert, setBalanceSuccessAlert] = useState<string | null>(null);
   const actionMenuRef = useRef<HTMLDivElement | null>(null);
@@ -283,21 +285,45 @@ export default function AdminDashboard() {
     }
   };
 
-  const handleIncreaseBalanceSubmit = async (e?: React.FormEvent) => {
+  const openEditBalanceModal = (u: AdminUser, mode: "set" | "add" | "subtract" = "set") => {
+    setOpenActionMenuUserId(null);
+    setSelectedUserForBalance(u);
+    setBalanceEditMode(mode);
+    setBalanceEditValue(mode === "set" ? parseFloat(u.balance || "0").toFixed(2) : "");
+    setBalanceEditReason("");
+    setBalanceModalError(null);
+  };
+
+  const handleUpdateBalanceSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!token || !selectedUserForBalance) return;
 
-    const num = parseFloat(balanceIncreaseAmount);
-    if (!Number.isFinite(num) || num <= 0) {
-      setBalanceModalError("Please enter a valid amount greater than $0.00 USD");
-      return;
-    }
-    if (num > 1000000) {
-      setBalanceModalError("Maximum amount allowed in a single operation is $1,000,000 USD");
+    const num = parseFloat(balanceEditValue);
+    if (!Number.isFinite(num)) {
+      setBalanceModalError("Please enter a valid numeric amount");
       return;
     }
 
-    setIsIncreasingBalance(true);
+    if (balanceEditMode === "set") {
+      if (num < 0) {
+        setBalanceModalError("Account balance cannot be negative ($0.00 or higher)");
+        return;
+      }
+    } else {
+      if (num <= 0) {
+        setBalanceModalError(`Amount to ${balanceEditMode === "add" ? "add" : "deduct"} must be greater than $0.00`);
+        return;
+      }
+      if (balanceEditMode === "subtract") {
+        const currentBal = parseFloat(selectedUserForBalance.balance || "0");
+        if (num > currentBal) {
+          setBalanceModalError(`Cannot deduct $${num.toFixed(2)} USD. User only has $${currentBal.toFixed(2)} USD.`);
+          return;
+        }
+      }
+    }
+
+    setIsUpdatingBalance(true);
     setBalanceModalError(null);
 
     try {
@@ -307,16 +333,23 @@ export default function AdminDashboard() {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          amount: num,
-          reason: balanceIncreaseReason.trim() || undefined,
+          operation: balanceEditMode,
+          value: num,
+          reason: balanceEditReason.trim() || undefined,
         }),
       });
 
       const data = await res.json();
       if (!res.ok) {
-        setBalanceModalError(data.error || "Failed to increase user balance");
+        setBalanceModalError(data.error || "Failed to update user balance");
       } else {
-        const newBalance = data.user?.balance ?? (parseFloat(selectedUserForBalance.balance || "0") + num).toFixed(2);
+        const newBalance = data.user?.balance ?? (
+          balanceEditMode === "set"
+            ? num.toFixed(2)
+            : balanceEditMode === "add"
+            ? (parseFloat(selectedUserForBalance.balance || "0") + num).toFixed(2)
+            : (parseFloat(selectedUserForBalance.balance || "0") - num).toFixed(2)
+        );
 
         // Update user in usersList immediately
         setUsersList((prev) =>
@@ -335,27 +368,20 @@ export default function AdminDashboard() {
           ]);
         }
 
-        const successMsg = `Successfully credited +$${num.toFixed(2)} USD to @${selectedUserForBalance.username}'s real account. New balance: $${parseFloat(newBalance).toFixed(2)}`;
+        const successMsg = `Successfully updated @${selectedUserForBalance.username}'s real balance to $${parseFloat(newBalance).toFixed(2)} USD`;
         setBalanceSuccessAlert(successMsg);
         setTimeout(() => setBalanceSuccessAlert(null), 6000);
 
         setSelectedUserForBalance(null);
-        setBalanceIncreaseAmount("");
-        setBalanceIncreaseReason("");
+        setBalanceEditValue("");
+        setBalanceEditReason("");
         fetchAdminData();
       }
     } catch (err: any) {
-      setBalanceModalError(err.message || "Failed to increase user balance");
+      setBalanceModalError(err.message || "Failed to update user balance");
     } finally {
-      setIsIncreasingBalance(false);
+      setIsUpdatingBalance(false);
     }
-  };
-
-  const addPresetAmount = (presetVal: number) => {
-    const current = parseFloat(balanceIncreaseAmount) || 0;
-    const next = (current + presetVal).toFixed(2);
-    setBalanceIncreaseAmount(next);
-    setBalanceModalError(null);
   };
 
   if (user?.role !== "ADMIN") {
@@ -691,74 +717,49 @@ export default function AdminDashboard() {
                             {new Date(u.createdAt).toLocaleDateString()}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              {/* Quick Top-up Button */}
+                            {/* 3-Dot Action Menu Dropdown */}
+                            <div
+                              className="relative inline-block text-left"
+                              ref={openActionMenuUserId === u.id ? actionMenuRef : undefined}
+                            >
                               <Button
-                                variant="outline"
+                                variant="ghost"
                                 size="sm"
-                                onClick={() => {
-                                  setOpenActionMenuUserId(null);
-                                  setSelectedUserForBalance(u);
-                                  setBalanceIncreaseAmount("");
-                                  setBalanceIncreaseReason("");
-                                  setBalanceModalError(null);
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setOpenActionMenuUserId(openActionMenuUserId === u.id ? null : u.id);
                                 }}
-                                title="Increase Real Balance"
-                                className="h-7 px-2 text-xs text-emerald-600 dark:text-emerald-400 hover:text-emerald-700 hover:bg-emerald-500/10 border-emerald-500/30 gap-1 hidden sm:inline-flex cursor-pointer"
+                                className="h-8 w-8 p-0 rounded-lg hover:bg-muted cursor-pointer transition-colors"
+                                title="User actions"
                               >
-                                <PlusCircle className="h-3.5 w-3.5" />
-                                <span>Increase</span>
+                                <MoreVertical className="h-4 w-4 text-muted-foreground" />
                               </Button>
 
-                              {/* Action Menu Dropdown */}
-                              <div
-                                className="relative inline-block text-left"
-                                ref={openActionMenuUserId === u.id ? actionMenuRef : undefined}
-                              >
-                                <Button
-                                  variant="ghost"
-                                  size="sm"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setOpenActionMenuUserId(openActionMenuUserId === u.id ? null : u.id);
-                                  }}
-                                  className="h-7 w-7 p-0 hover:bg-muted cursor-pointer"
-                                  title="Actions menu"
-                                >
-                                  <MoreVertical className="h-4 w-4 text-muted-foreground" />
-                                </Button>
+                              {openActionMenuUserId === u.id && (
+                                <div className="absolute right-0 mt-1 w-60 rounded-xl bg-card border shadow-xl z-30 py-1.5 animate-in fade-in zoom-in-95 text-left">
+                                  <div className="px-3 py-1.5 border-b mb-1">
+                                    <p className="text-[11px] font-semibold text-foreground truncate">{u.firstName} {u.secondName}</p>
+                                    <p className="text-[10px] text-muted-foreground truncate font-mono">@{u.username} • ${parseFloat(u.balance || "0").toFixed(2)} USD</p>
+                                  </div>
 
-                                {openActionMenuUserId === u.id && (
-                                  <div className="absolute right-0 mt-1 w-56 rounded-xl bg-card border shadow-xl z-30 py-1.5 animate-in fade-in zoom-in-95 text-left">
-                                    <div className="px-3 py-1.5 border-b mb-1">
-                                      <p className="text-[11px] font-semibold text-foreground truncate">{u.firstName} {u.secondName}</p>
-                                      <p className="text-[10px] text-muted-foreground truncate">@{u.username} • ${parseFloat(u.balance || "0").toFixed(2)} USD</p>
+                                  {/* Primary Action: Edit Account Balance */}
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditBalanceModal(u, "set")}
+                                    className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-emerald-500/10 text-foreground transition-colors group cursor-pointer"
+                                  >
+                                    <div className="p-1 rounded-md bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
+                                      <Pencil className="h-4 w-4" />
                                     </div>
-
-                                    {/* Primary Action: Increase Real Balance */}
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setOpenActionMenuUserId(null);
-                                        setSelectedUserForBalance(u);
-                                        setBalanceIncreaseAmount("");
-                                        setBalanceIncreaseReason("");
-                                        setBalanceModalError(null);
-                                      }}
-                                      className="w-full text-left px-3 py-2 text-xs flex items-center gap-2.5 hover:bg-emerald-500/10 text-foreground transition-colors group cursor-pointer"
-                                    >
-                                      <div className="p-1 rounded-md bg-emerald-500/10 text-emerald-500 group-hover:bg-emerald-500 group-hover:text-white transition-colors">
-                                        <PlusCircle className="h-4 w-4" />
+                                    <div>
+                                      <div className="font-semibold text-emerald-600 dark:text-emerald-400">
+                                        Edit Account Balance
                                       </div>
-                                      <div>
-                                        <div className="font-semibold text-emerald-600 dark:text-emerald-400">
-                                          Increase Real Balance
-                                        </div>
-                                        <div className="text-[10px] text-muted-foreground">Add funds to user wallet</div>
-                                      </div>
-                                    </button>
+                                      <div className="text-[10px] text-muted-foreground">Change balance to any value</div>
+                                    </div>
+                                  </button>
 
-                                    <div className="h-px bg-border my-1" />
+                                  <div className="h-px bg-border my-1" />
 
                                     {/* View User's Trades */}
                                     <button
@@ -812,7 +813,6 @@ export default function AdminDashboard() {
                                   </div>
                                 )}
                               </div>
-                            </div>
                           </td>
                         </tr>
                       ))}
@@ -1272,13 +1272,24 @@ export default function AdminDashboard() {
         </div>
       )}
 
-      {/* Increase User Real Balance Modal */}
+      {/* Edit User Real Balance Modal */}
       {selectedUserForBalance && (() => {
         const activeSelectedUser = usersList.find((u) => u.id === selectedUserForBalance.id) || selectedUserForBalance;
         const currentBal = parseFloat(activeSelectedUser.balance || "0");
-        const parsedIncrease = parseFloat(balanceIncreaseAmount);
-        const isValidIncrease = Number.isFinite(parsedIncrease) && parsedIncrease > 0;
-        const projectedBal = isValidIncrease ? (currentBal + parsedIncrease).toFixed(2) : currentBal.toFixed(2);
+        const parsedVal = parseFloat(balanceEditValue);
+        const isValidVal = Number.isFinite(parsedVal);
+
+        let projectedBal = currentBal;
+        if (isValidVal) {
+          if (balanceEditMode === "set") {
+            projectedBal = Math.max(0, parsedVal);
+          } else if (balanceEditMode === "add") {
+            projectedBal = currentBal + Math.max(0, parsedVal);
+          } else if (balanceEditMode === "subtract") {
+            projectedBal = Math.max(0, currentBal - Math.max(0, parsedVal));
+          }
+        }
+        const delta = projectedBal - currentBal;
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in">
@@ -1287,19 +1298,19 @@ export default function AdminDashboard() {
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
                   <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-500">
-                    <Wallet className="h-6 w-6" />
+                    <Pencil className="h-6 w-6" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-base">Increase Real Balance</h3>
-                    <p className="text-xs text-muted-foreground">Credit funds directly to user's real account</p>
+                    <h3 className="font-bold text-base">Edit Account Balance</h3>
+                    <p className="text-xs text-muted-foreground">Change user's real balance to any value (no limitation)</p>
                   </div>
                 </div>
                 <button
                   type="button"
                   onClick={() => {
-                    if (!isIncreasingBalance) setSelectedUserForBalance(null);
+                    if (!isUpdatingBalance) setSelectedUserForBalance(null);
                   }}
-                  disabled={isIncreasingBalance}
+                  disabled={isUpdatingBalance}
                   className="text-muted-foreground hover:text-foreground p-1 rounded-lg hover:bg-muted transition-colors cursor-pointer"
                 >
                   <X className="h-5 w-5" />
@@ -1340,13 +1351,79 @@ export default function AdminDashboard() {
                 </div>
               </div>
 
+              {/* Mode Selector Tabs */}
+              <div className="grid grid-cols-3 gap-1.5 bg-muted/50 p-1 rounded-xl text-xs font-semibold">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBalanceEditMode("set");
+                    setBalanceEditValue(currentBal.toFixed(2));
+                    setBalanceModalError(null);
+                  }}
+                  disabled={isUpdatingBalance}
+                  className={`py-1.5 rounded-lg transition-all cursor-pointer ${
+                    balanceEditMode === "set"
+                      ? "bg-card text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Set Exact
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBalanceEditMode("add");
+                    setBalanceEditValue("");
+                    setBalanceModalError(null);
+                  }}
+                  disabled={isUpdatingBalance}
+                  className={`py-1.5 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                    balanceEditMode === "add"
+                      ? "bg-emerald-600 text-white shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <PlusCircle className="h-3 w-3" />
+                  <span>Add (+)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBalanceEditMode("subtract");
+                    setBalanceEditValue("");
+                    setBalanceModalError(null);
+                  }}
+                  disabled={isUpdatingBalance}
+                  className={`py-1.5 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                    balanceEditMode === "subtract"
+                      ? "bg-amber-600 text-white shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <MinusCircle className="h-3 w-3" />
+                  <span>Deduct (-)</span>
+                </button>
+              </div>
+
               {/* Form */}
-              <form onSubmit={handleIncreaseBalanceSubmit} className="space-y-4">
+              <form onSubmit={handleUpdateBalanceSubmit} className="space-y-4">
                 {/* Amount Input */}
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground flex items-center justify-between">
-                    <span>Amount to Add (USD) *</span>
-                    <span className="text-[11px] text-muted-foreground font-normal">Min $0.01 • Max $1,000,000</span>
+                    <span>
+                      {balanceEditMode === "set"
+                        ? "New Account Balance (USD) *"
+                        : balanceEditMode === "add"
+                        ? "Amount to Add (USD) *"
+                        : "Amount to Deduct (USD) *"}
+                    </span>
+                    <span className="text-[11px] text-muted-foreground font-normal">
+                      {balanceEditMode === "set"
+                        ? "Any amount ($0.00+)"
+                        : balanceEditMode === "add"
+                        ? "No upper limitation"
+                        : `Max $${currentBal.toFixed(2)}`}
+                    </span>
                   </label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-muted-foreground font-bold font-mono">
@@ -1355,34 +1432,89 @@ export default function AdminDashboard() {
                     <input
                       type="number"
                       step="any"
-                      min="0.01"
-                      max="1000000"
+                      min="0"
                       placeholder="0.00"
-                      value={balanceIncreaseAmount}
+                      value={balanceEditValue}
                       onChange={(e) => {
-                        setBalanceIncreaseAmount(e.target.value);
+                        setBalanceEditValue(e.target.value);
                         setBalanceModalError(null);
                       }}
-                      disabled={isIncreasingBalance}
+                      disabled={isUpdatingBalance}
                       autoFocus
                       className="w-full bg-muted/50 border rounded-xl pl-8 pr-4 py-2.5 text-base font-semibold focus:outline-none focus:ring-2 focus:ring-emerald-500 font-mono"
                     />
                   </div>
 
-                  {/* Preset Amount Chips */}
+                  {/* Preset Shortcuts */}
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
                     <span className="text-[11px] text-muted-foreground mr-1">Presets:</span>
-                    {[10, 25, 50, 100, 250, 500].map((preset) => (
-                      <button
-                        key={preset}
-                        type="button"
-                        onClick={() => addPresetAmount(preset)}
-                        disabled={isIncreasingBalance}
-                        className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 border transition-colors cursor-pointer"
-                      >
-                        +${preset}
-                      </button>
-                    ))}
+                    {balanceEditMode === "set" && (
+                      <>
+                        {[0, 50, 100, 500, 1000, 5000, 10000, 50000].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              setBalanceEditValue(preset.toFixed(2));
+                              setBalanceModalError(null);
+                            }}
+                            disabled={isUpdatingBalance}
+                            className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 border transition-colors cursor-pointer"
+                          >
+                            ${preset === 0 ? "0.00" : preset.toLocaleString()}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {balanceEditMode === "add" && (
+                      <>
+                        {[10, 50, 100, 500, 1000, 5000, 10000].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              const cur = parseFloat(balanceEditValue) || 0;
+                              setBalanceEditValue((cur + preset).toFixed(2));
+                              setBalanceModalError(null);
+                            }}
+                            disabled={isUpdatingBalance}
+                            className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400 border transition-colors cursor-pointer"
+                          >
+                            +${preset.toLocaleString()}
+                          </button>
+                        ))}
+                      </>
+                    )}
+                    {balanceEditMode === "subtract" && (
+                      <>
+                        {[10, 50, 100, 500].map((preset) => (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => {
+                              const cur = parseFloat(balanceEditValue) || 0;
+                              setBalanceEditValue((cur + preset).toFixed(2));
+                              setBalanceModalError(null);
+                            }}
+                            disabled={isUpdatingBalance}
+                            className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-muted hover:bg-amber-500/10 hover:text-amber-600 dark:hover:text-amber-400 border transition-colors cursor-pointer"
+                          >
+                            -${preset}
+                          </button>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setBalanceEditValue(currentBal.toFixed(2));
+                            setBalanceModalError(null);
+                          }}
+                          disabled={isUpdatingBalance}
+                          className="text-[11px] font-medium px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition-colors cursor-pointer"
+                        >
+                          Clear All (${currentBal.toFixed(2)})
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -1390,18 +1522,18 @@ export default function AdminDashboard() {
                 <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-xl p-3 text-xs space-y-1.5">
                   <div className="flex justify-between text-muted-foreground">
                     <span>Current Real Balance:</span>
-                    <span className="font-mono">${currentBal.toFixed(2)}</span>
+                    <span className="font-mono">${currentBal.toFixed(2)} USD</span>
                   </div>
-                  <div className="flex justify-between text-emerald-600 dark:text-emerald-400 font-medium">
-                    <span>Credit to Add:</span>
-                    <span className="font-mono">
-                      +${isValidIncrease ? parsedIncrease.toFixed(2) : "0.00"}
+                  <div className="flex justify-between font-medium">
+                    <span className="text-muted-foreground">Balance Adjustment:</span>
+                    <span className={`font-mono ${delta > 0 ? "text-emerald-500" : delta < 0 ? "text-amber-500" : "text-muted-foreground"}`}>
+                      {delta > 0 ? `+$${delta.toFixed(2)}` : delta < 0 ? `-$${Math.abs(delta).toFixed(2)}` : "$0.00"} USD
                     </span>
                   </div>
                   <div className="flex justify-between items-center pt-1.5 border-t border-emerald-500/20 text-sm font-bold">
                     <span className="text-foreground">Projected Real Balance:</span>
                     <span className="text-emerald-600 dark:text-emerald-400 font-mono text-base">
-                      ${projectedBal} USD
+                      ${projectedBal.toFixed(2)} USD
                     </span>
                   </div>
                 </div>
@@ -1410,23 +1542,23 @@ export default function AdminDashboard() {
                 <div className="space-y-1.5">
                   <label className="text-xs font-semibold text-foreground flex items-center justify-between">
                     <span>Reason / Audit Note (Optional)</span>
-                    <span className="text-[11px] text-muted-foreground font-normal">Stored in ledger</span>
+                    <span className="text-[11px] text-muted-foreground font-normal">Recorded in ledger</span>
                   </label>
                   <input
                     type="text"
-                    placeholder="e.g. Deposit top-up, promotional bonus, adjustment..."
-                    value={balanceIncreaseReason}
-                    onChange={(e) => setBalanceIncreaseReason(e.target.value)}
-                    disabled={isIncreasingBalance}
+                    placeholder="e.g. Balance override, deposit correction, bonus, manual adjustment..."
+                    value={balanceEditReason}
+                    onChange={(e) => setBalanceEditReason(e.target.value)}
+                    disabled={isUpdatingBalance}
                     className="w-full bg-muted/50 border rounded-xl px-3 py-2 text-xs focus:outline-none focus:ring-1 focus:ring-emerald-500"
                   />
                   <div className="flex flex-wrap gap-1.5 pt-0.5">
-                    {["Admin deposit", "Promotional Bonus", "Dispute Resolution", "Manual adjustment"].map((tag) => (
+                    {["Admin balance override", "Promotional Bonus", "Dispute Resolution", "Manual adjustment"].map((tag) => (
                       <button
                         key={tag}
                         type="button"
-                        onClick={() => setBalanceIncreaseReason(tag)}
-                        disabled={isIncreasingBalance}
+                        onClick={() => setBalanceEditReason(tag)}
+                        disabled={isUpdatingBalance}
                         className="text-[10px] text-muted-foreground hover:text-foreground px-2 py-0.5 rounded bg-muted/60 hover:bg-muted border transition-colors cursor-pointer"
                       >
                         {tag}
@@ -1449,26 +1581,26 @@ export default function AdminDashboard() {
                     type="button"
                     variant="outline"
                     onClick={() => setSelectedUserForBalance(null)}
-                    disabled={isIncreasingBalance}
+                    disabled={isUpdatingBalance}
                   >
                     Cancel
                   </Button>
                   <Button
                     type="submit"
                     disabled={
-                      isIncreasingBalance ||
-                      !balanceIncreaseAmount ||
-                      !(parseFloat(balanceIncreaseAmount) > 0)
+                      isUpdatingBalance ||
+                      !balanceEditValue ||
+                      !Number.isFinite(parseFloat(balanceEditValue))
                     }
                     className="bg-emerald-600 hover:bg-emerald-700 text-white gap-2 font-semibold cursor-pointer"
                   >
-                    {isIncreasingBalance ? (
+                    {isUpdatingBalance ? (
                       <>
-                        <RefreshCw className="h-4 w-4 animate-spin" /> Crediting...
+                        <RefreshCw className="h-4 w-4 animate-spin" /> Saving...
                       </>
                     ) : (
                       <>
-                        <PlusCircle className="h-4 w-4" /> Credit ${isValidIncrease ? parsedIncrease.toFixed(2) : "0.00"}
+                        <Pencil className="h-4 w-4" /> Save Balance (${projectedBal.toFixed(2)})
                       </>
                     )}
                   </Button>

@@ -15,10 +15,16 @@ const tradingService = TradingService.getInstance();
 router.post("/api/trades/place", authMiddleware, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
-    const { symbol, type, stake, durationSeconds } = req.body;
+    const { symbol, type, stake, durationSeconds, accountType } = req.body;
 
     if (!symbol || !type || stake === undefined) {
       return res.status(400).json({ error: "Missing required trade parameters (symbol, type, stake)" });
+    }
+
+    if (accountType === "demo") {
+      return res.status(400).json({
+        error: "Demo trades are simulated locally on the client and do not execute against the real balance.",
+      });
     }
 
     const result = await tradingService.placeTrade({
@@ -27,6 +33,7 @@ router.post("/api/trades/place", authMiddleware, async (req: AuthRequest, res) =
       type: type as TradeType,
       stake: Number(stake),
       durationSeconds: Number(durationSeconds) || 15,
+      accountType: "real",
     });
 
     res.json({
