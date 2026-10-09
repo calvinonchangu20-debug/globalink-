@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch } from "@/lib/api";
+import { SubscriptionSection } from "@/components/subscription-plans";
 
 interface UserProfileData {
   id: string;
@@ -361,6 +362,8 @@ export default function Profile() {
             <div className="text-[11px] text-muted-foreground">USD via M-Pesa</div>
           </div>
         </div>
+
+        <SubscriptionSection onSubscribed={fetchProfile} />
 
         {/* Forms Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

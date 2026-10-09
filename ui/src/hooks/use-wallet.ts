@@ -3,7 +3,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { apiFetch } from "@/lib/api";
 
 export type TxDirection = "credit" | "debit";
-export type TxType = "mpesa_stk" | "mpesa_c2b" | "crypto_deposit" | "crypto_withdrawal" | "withdrawal" | "adjustment";
+export type TxType = "mpesa_stk" | "mpesa_c2b" | "crypto_deposit" | "crypto_withdrawal" | "withdrawal" | "adjustment" | "subscription";
 export type TxStatus = "pending" | "completed" | "failed" | "reversed";
 
 export interface Transaction {

@@ -9,6 +9,7 @@ import paymentsRouter from "./routes/payments.js";
 import tradesRouter from "./routes/trades.js";
 import adminRouter from "./routes/admin.js";
 import userRouter from "./routes/user.js";
+import subscriptionsRouter from "./routes/subscriptions.js";
 import { TradingService } from "./services/trading.service.js";
 import { attachTicksWebSocket } from "./ws-ticks.js";
 import { initSystemSettings } from "./services/settings.service.js";
@@ -30,6 +31,7 @@ app.use(express.json());
 // Routes
 app.use(authRouter);
 app.use(userRouter);
+app.use(subscriptionsRouter);
 app.use(candlesRouter);
 app.use(ticksRouter);
 app.use(symbolsRouter);
@@ -40,6 +42,17 @@ app.use(adminRouter);
 // Health check
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: Date.now() });
+});
+
+// Fallback 404 handler for unmatched routes (always return JSON)
+app.use((req, res) => {
+  res.status(404).json({ error: `Route not found: ${req.method} ${req.originalUrl}` });
+});
+
+// Global error handler (always return JSON)
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("[api] Unhandled error:", err);
+  res.status(err.status || 500).json({ error: err.message || "Internal server error" });
 });
 
 // Create HTTP server and attach WebSocket

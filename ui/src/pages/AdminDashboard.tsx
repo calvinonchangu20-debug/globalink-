@@ -23,7 +23,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, safeJson } from "@/lib/api";
 
 interface Metrics {
   users: { total: number };
@@ -177,19 +177,19 @@ export default function AdminDashboard() {
       }
 
       const [dataMetrics, dataUsers, dataTrades, dataTx] = await Promise.all([
-        resMetrics.json(),
-        resUsers.json(),
-        resTrades.json(),
-        resTx.json(),
+        safeJson<any>(resMetrics),
+        safeJson<any>(resUsers),
+        safeJson<any>(resTrades),
+        safeJson<any>(resTx),
       ]);
 
-      setMetrics(dataMetrics.metrics);
-      setUsersList(dataUsers.users || []);
-      setTradesList(dataTrades.trades || []);
-      setTxList(dataTx.transactions || []);
+      if (dataMetrics?.metrics) setMetrics(dataMetrics.metrics);
+      if (dataUsers?.users) setUsersList(dataUsers.users);
+      if (dataTrades?.trades) setTradesList(dataTrades.trades);
+      if (dataTx?.transactions) setTxList(dataTx.transactions);
 
       if (resSettings && resSettings.ok) {
-        const dataSettings = await resSettings.json();
+        const dataSettings = await safeJson(resSettings);
         if (dataSettings?.settings?.minWithdrawalUSD !== undefined) {
           const val = dataSettings.settings.minWithdrawalUSD;
           setMinWithdrawalSetting(val);
@@ -230,10 +230,10 @@ export default function AdminDashboard() {
         },
         body: JSON.stringify({ minWithdrawalUSD: val }),
       });
-      const data = await res.json();
+      const data = await safeJson(res);
       if (!res.ok) {
-        setSettingError(data?.error || "Failed to update withdrawal limit");
-      } else {
+        setSettingError(data?.error || `Failed to update withdrawal limit (HTTP ${res.status})`);
+      } else if (data) {
         setMinWithdrawalSetting(data.minWithdrawalUSD);
         setInputMinWithdrawal(data.minWithdrawalUSD.toFixed(2));
         setSettingSuccess(`Saved! Minimum withdrawal is now $${data.minWithdrawalUSD.toFixed(2)} USD`);
@@ -275,8 +275,8 @@ export default function AdminDashboard() {
         );
         setPendingRoleChange(null);
       } else {
-        const data = await res.json();
-        alert(data.error || "Failed to update role");
+        const data = await safeJson(res);
+        alert(data?.error || `Failed to update role (HTTP ${res.status})`);
       }
     } catch (err) {
       console.error("Failed to update role:", err);
@@ -339,11 +339,16 @@ export default function AdminDashboard() {
         }),
       });
 
-      const data = await res.json();
+      const data = await safeJson(res);
       if (!res.ok) {
-        setBalanceModalError(data.error || "Failed to update user balance");
+        const errorMsg =
+          data?.error ||
+          (res.status === 404
+            ? "Balance update endpoint not found (404). Please redeploy the latest backend code on Railway."
+            : `Failed to update user balance (HTTP ${res.status}).`);
+        setBalanceModalError(errorMsg);
       } else {
-        const newBalance = data.user?.balance ?? (
+        const newBalance = data?.user?.balance ?? (
           balanceEditMode === "set"
             ? num.toFixed(2)
             : balanceEditMode === "add"
@@ -357,7 +362,7 @@ export default function AdminDashboard() {
         );
 
         // Update txList if transaction record returned
-        if (data.transaction) {
+        if (data?.transaction) {
           setTxList((prev) => [
             {
               ...data.transaction,

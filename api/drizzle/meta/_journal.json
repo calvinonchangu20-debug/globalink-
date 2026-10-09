@@ -15,6 +15,13 @@
       "when": 1787336093726,
       "tag": "0001_add_mpesa_wallet",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787336093727,
+      "tag": "0005_add_signal_subscriptions",
+      "breakpoints": true
     }
   ]
 }

@@ -7,6 +7,7 @@ import {
   numeric,
   pgEnum,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -30,6 +31,7 @@ export const txTypeEnum = pgEnum("tx_type", [
   "adjustment",
   "trade_stake",
   "trade_payout",
+  "subscription",
 ]);
 
 /** Lifecycle of a wallet transaction */
@@ -230,3 +232,29 @@ export const systemSettings = pgTable("system_settings", {
   description: text("description"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const signalSubscriptions = pgTable(
+  "signal_subscriptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+
+    plan: varchar("plan", { length: 20 }).notNull(),
+    amountUsd: numeric("amount_usd", { precision: 14, scale: 2 }).notNull(),
+    status: varchar("status", { length: 20 }).notNull().default("active"),
+
+    startedAt: timestamp("started_at").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+
+    transactionId: uuid("transaction_id").references(() => transactions.id, {
+      onDelete: "set null",
+    }),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    index("signal_subscriptions_user_status_idx").on(table.userId, table.status),
+  ]
+);

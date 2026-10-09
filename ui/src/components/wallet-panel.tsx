@@ -628,6 +628,7 @@ function TxRow({ tx }: { tx: Transaction }) {
     crypto_withdrawal: "Crypto Payout",
     withdrawal: "Withdrawal",
     adjustment: "Adjustment",
+    subscription: "Signal Subscription",
   }
 
   return (

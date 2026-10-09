@@ -69,3 +69,18 @@ export async function apiFetch(endpoint: string, options: RequestInit = {}): Pro
 
   return response;
 }
+
+/**
+ * Safely parse JSON from a fetch Response, avoiding syntax crashes when servers return HTML.
+ */
+export async function safeJson<T = any>(res: Response, fallback: T | null = null): Promise<T | null> {
+  try {
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      return fallback;
+    }
+    return (await res.json()) as T;
+  } catch {
+    return fallback;
+  }
+}
