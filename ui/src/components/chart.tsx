@@ -138,6 +138,7 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
     chart.setPeriod({ span: 1, type: 'second' });
     chart.setMaxOffsetLeftDistance(0);
     chart.setMaxOffsetRightDistance(0);
+    chart.setOffsetRightDistance(0);
     
     chart.setFormatter({
       formatDate: ({ timestamp, type }) => {
@@ -185,6 +186,8 @@ export const Chart = forwardRef<ChartHandle, ChartProps>(function Chart({ symbol
                 setTimeout(() => {
                   chart.setBarSpace(8);
                   chart.scrollToRealTime();
+                  // scrollToRealTime restores the default 80px right offset; reset so candles stay flush to the edge
+                  chart.setOffsetRightDistance(0);
                 }, 50);
               } else {
                 callback([], { forward: false, backward: false });
