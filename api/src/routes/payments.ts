@@ -1,6 +1,6 @@
 import express from "express";
 import { getUsdToKesRate } from "../services/exchange.service.js";
-import { eq, and, or, sql } from "drizzle-orm";
+import { eq, and, or, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, transactions, mpesaPendingStk, cryptoPendingPayments, signalSubscriptions } from "../db/schema.js";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
@@ -875,6 +875,35 @@ router.get("/api/payments/crypto/config", (_req, res) => {
   });
 });
 
+// GET /api/payments/crypto/currencies
+// Admin only. Lists gateway currencies and which configured networks are usable.
+router.get("/api/payments/crypto/currencies", authMiddleware, async (req: AuthRequest, res) => {
+  if (req.user!.role !== "ADMIN") {
+    return res.status(403).json({ error: "Admin only" });
+  }
+
+  try {
+    const cryptoService = CryptoPaymentService.getInstance();
+    const currencies = await cryptoService.getEnabledCurrencies();
+    if (!currencies) {
+      return res.status(502).json({ error: "Could not fetch currencies from the payment gateway." });
+    }
+
+    res.json({
+      count: currencies.length,
+      currencies,
+      supported: Object.values(SUPPORTED_CRYPTO_NETWORKS).map((network) => ({
+        network: network.id,
+        currency: network.currency,
+        enabled: currencies.includes(network.currency),
+      })),
+    });
+  } catch (err: any) {
+    console.error("[payments] crypto currencies error:", err);
+    res.status(500).json({ error: err.message || "Failed to fetch currencies" });
+  }
+});
+
 // POST /api/payments/crypto/deposit
 // Authenticated. Creates a pending transaction and crypto invoice with a deposit address.
 router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequest, res) => {
@@ -882,14 +911,15 @@ router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequ
     const userId = req.user!.id;
     const { amount, network = "TRC20" } = req.body;
 
-    if (!amount || typeof amount !== "number" || amount < 10) {
-      return res.status(400).json({ error: "Minimum deposit is 10 USD" });
-    }
-
     const netKey = (network || "TRC20").toUpperCase();
     const netConfig = SUPPORTED_CRYPTO_NETWORKS[netKey];
     if (!netConfig) {
       return res.status(400).json({ error: `Unsupported crypto network: ${network}. Choose TRC20, BEP20, or POLYGON.` });
+    }
+
+    const numAmount = typeof amount === "number" ? amount : Number(amount);
+    if (!Number.isFinite(numAmount) || numAmount < netConfig.minDepositUSD) {
+      return res.status(400).json({ error: `Minimum deposit is ${netConfig.minDepositUSD} USD` });
     }
 
     // Check user exists
@@ -901,7 +931,7 @@ router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequ
       .insert(transactions)
       .values({
         userId,
-        amount: amount.toFixed(2),
+        amount: numAmount.toFixed(2),
         direction: "credit",
         type: "crypto_deposit",
         status: "pending",
@@ -918,7 +948,7 @@ router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequ
     const invoice = await cryptoService.createInvoice({
       userId,
       transactionId: txRecord.id,
-      amountUSD: amount,
+      amountUSD: numAmount,
       networkKey: netConfig.id,
       ipnCallbackUrl,
     });
@@ -931,7 +961,7 @@ router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequ
       payAddress: invoice.payAddress,
       payCurrency: invoice.payCurrency,
       network: invoice.network,
-      amountUSD: amount.toFixed(2),
+      amountUSD: numAmount.toFixed(2),
       payAmount: invoice.payAmount.toFixed(8),
       status: "waiting",
     });
@@ -980,7 +1010,12 @@ router.get("/api/payments/crypto/status/:paymentId", authMiddleware, async (req:
         if (gwStatus !== pending.status) {
           if (gwStatus === "finished" || gwStatus === "confirmed") {
             // Apply atomic settlement
-            await settleCryptoPayment(paymentId, statusData.pay_amount || pending.payAmount, statusData.tx_hash);
+            await settleCryptoPayment(paymentId, {
+              actuallyPaid: Number(statusData.actually_paid),
+              priceAmount: Number(statusData.price_amount),
+              payAmount: Number(statusData.pay_amount),
+              txHash: statusData.tx_hash,
+            });
             pending.status = "finished";
           } else {
             await db
@@ -1009,8 +1044,26 @@ router.get("/api/payments/crypto/status/:paymentId", authMiddleware, async (req:
   }
 });
 
+interface CryptoPaymentData {
+  actuallyPaid?: number;
+  priceAmount?: number;
+  payAmount?: number;
+  txHash?: string;
+}
+
+function resolveCreditedUsd(requestedUsd: number, data: CryptoPaymentData): number {
+  const baseUsd = data.priceAmount && data.priceAmount > 0 ? data.priceAmount : requestedUsd;
+  const paid = data.actuallyPaid;
+  const quoted = data.payAmount;
+  if (paid && paid > 0 && quoted && quoted > 0) {
+    const paidUsd = baseUsd * (paid / quoted);
+    return Math.max(0, Math.min(paidUsd, requestedUsd));
+  }
+  return requestedUsd;
+}
+
 // Helper: Settles crypto payment atomically
-async function settleCryptoPayment(paymentId: string, actualPaid?: string | number, txHash?: string) {
+async function settleCryptoPayment(paymentId: string, data: CryptoPaymentData = {}) {
   return await db.transaction(async (tx) => {
     const [pending] = await tx
       .select()
@@ -1023,7 +1076,29 @@ async function settleCryptoPayment(paymentId: string, actualPaid?: string | numb
     }
 
     if (pending.status === "finished") {
-      return true; // Already processed
+      return true;
+    }
+
+    const requestedUsd = parseFloat(pending.amountUSD);
+    const creditedUsd = resolveCreditedUsd(requestedUsd, data);
+
+    const [locked] = await tx
+      .update(cryptoPendingPayments)
+      .set({
+        status: "finished",
+        txHash: data.txHash || pending.txHash,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(cryptoPendingPayments.id, pending.id),
+          ne(cryptoPendingPayments.status, "finished")
+        )
+      )
+      .returning({ id: cryptoPendingPayments.id });
+
+    if (!locked) {
+      return true;
     }
 
     const [pendingTx] = await tx
@@ -1033,14 +1108,13 @@ async function settleCryptoPayment(paymentId: string, actualPaid?: string | numb
 
     if (!pendingTx) {
       console.warn(`[CryptoSettle] Transaction already settled or not found: ${pending.transactionId}`);
-      return false;
+      return true;
     }
 
-    // 1. Atomically credit user balance
     const [updatedUser] = await tx
       .update(users)
       .set({
-        balance: sql`${users.balance} + ${pendingTx.amount}`,
+        balance: sql`${users.balance} + ${creditedUsd.toFixed(2)}::numeric`,
         updatedAt: new Date(),
       })
       .where(eq(users.id, pending.userId))
@@ -1048,28 +1122,18 @@ async function settleCryptoPayment(paymentId: string, actualPaid?: string | numb
 
     const newBalance = updatedUser?.balance ?? "0";
 
-    // 2. Mark transaction completed
     await tx
       .update(transactions)
       .set({
         status: "completed",
+        amount: creditedUsd.toFixed(2),
         balanceAfter: newBalance,
         completedAt: new Date(),
-        description: `Deposit via USDT (${pending.network}) – Invoice ${paymentId}`,
+        description: `Deposit via USDT (${pending.network}) - Invoice ${paymentId}`,
       })
       .where(eq(transactions.id, pendingTx.id));
 
-    // 3. Mark crypto pending payment as finished
-    await tx
-      .update(cryptoPendingPayments)
-      .set({
-        status: "finished",
-        txHash: txHash || pending.txHash,
-        updatedAt: new Date(),
-      })
-      .where(eq(cryptoPendingPayments.id, pending.id));
-
-    console.log(`[CryptoSettle] Credited ${pendingTx.amount} USD to user ${pending.userId} for invoice ${paymentId}`);
+    console.log(`[CryptoSettle] Credited ${creditedUsd.toFixed(2)} USD to user ${pending.userId} for invoice ${paymentId}`);
     return true;
   });
 }
@@ -1097,7 +1161,12 @@ router.post("/api/payments/crypto/ipn", async (req, res) => {
     const stringPaymentId = String(payment_id);
 
     if (payment_status === "finished" || payment_status === "confirmed") {
-      await settleCryptoPayment(stringPaymentId, actually_paid || pay_amount, req.body.tx_hash);
+      await settleCryptoPayment(stringPaymentId, {
+        actuallyPaid: Number(actually_paid),
+        priceAmount: Number(req.body.price_amount),
+        payAmount: Number(req.body.pay_amount ?? pay_amount),
+        txHash: req.body.tx_hash,
+      });
     } else {
       // Update intermediate status (e.g., "confirming", "partially_paid", "failed")
       await db
@@ -1137,7 +1206,7 @@ router.post("/api/payments/crypto/simulate-pay", authMiddleware, async (req: Aut
     }
 
     const fakeTxHash = `0xsim_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
-    const settled = await settleCryptoPayment(paymentId, pending.payAmount || pending.amountUSD, fakeTxHash);
+    const settled = await settleCryptoPayment(paymentId, { txHash: fakeTxHash });
 
     if (settled) {
       res.json({

@@ -363,7 +363,7 @@ export default function Profile() {
           </div>
         </div>
 
-        <SubscriptionSection onSubscribed={fetchProfile} />
+        <SubscriptionSection onSubscribed={fetchProfile} defaultPhone={profile?.phoneNumber ?? ""} />
 
         {/* Forms Row */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

@@ -38,6 +38,7 @@ interface SubscribeResponse {
 
 interface SubscriptionSectionProps {
   onSubscribed?: () => void;
+  defaultPhone?: string;
 }
 
 const PLAN_ICONS: Record<string, typeof Radio> = {
@@ -49,7 +50,7 @@ const PLAN_ICONS: Record<string, typeof Radio> = {
 const POLL_INTERVAL_MS = 3000;
 const POLL_TIMEOUT_MS = 90000;
 
-export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) {
+export function SubscriptionSection({ onSubscribed, defaultPhone = "" }: SubscriptionSectionProps) {
   const [plans, setPlans] = useState<SignalPlan[]>([]);
   const [current, setCurrent] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,11 +60,18 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
   const [notice, setNotice] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modalPlan, setModalPlan] = useState<SignalPlan | null>(null);
+  const [modalError, setModalError] = useState<string | null>(null);
+  const [phone, setPhone] = useState(defaultPhone);
 
   const onSubscribedRef = useRef(onSubscribed);
   useEffect(() => {
     onSubscribedRef.current = onSubscribed;
   }, [onSubscribed]);
+
+  useEffect(() => {
+    setPhone((prev) => (prev ? prev : defaultPhone));
+  }, [defaultPhone]);
 
   const fetchSubscriptions = useCallback(async (): Promise<Subscription | null> => {
     try {
@@ -123,31 +131,44 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
     return () => clearTimeout(timer);
   }, [error]);
 
-  const handleSubscribe = async (planId: string) => {
+  const openModal = (plan: SignalPlan) => {
+    setModalError(null);
+    setModalPlan(plan);
+  };
+
+  const closeModal = () => {
+    if (submitting) return;
+    setModalPlan(null);
+    setModalError(null);
+  };
+
+  const confirmSubscribe = async () => {
+    if (!modalPlan) return;
+    const planId = modalPlan.id;
     setSubmitting(planId);
-    setSuccess(null);
-    setError(null);
-    setNotice(null);
+    setModalError(null);
     try {
       const res = await apiFetch("/api/subscriptions/subscribe", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ plan: planId }),
+        body: JSON.stringify({ plan: planId, phoneNumber: phone.trim() }),
       });
       const data = await safeJson<SubscribeResponse>(res);
       if (!res.ok || !data) {
         throw new Error(data?.error || `Could not start M-Pesa payment (HTTP ${res.status})`);
       }
+      setModalPlan(null);
       setNotice(data.message ?? "M-Pesa prompt sent. Enter your PIN to complete payment.");
       setAwaiting(planId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not start M-Pesa payment");
+      setModalError(err instanceof Error ? err.message : "Could not start M-Pesa payment");
     } finally {
       setSubmitting(null);
     }
   };
 
   const busy = submitting !== null || awaiting !== null || current !== null;
+  const ModalIcon = modalPlan ? PLAN_ICONS[modalPlan.id] ?? Radio : Radio;
 
   return (
     <div className="bg-card border rounded-2xl p-6 shadow-sm">
@@ -156,7 +177,7 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
         <div>
           <h3 className="font-bold text-base">Signal Subscriptions</h3>
           <p className="text-[11px] text-muted-foreground">
-            Pay via M-Pesa. A prompt is sent to the number on your account.
+            Pay via M-Pesa. A prompt is sent to the number you confirm.
           </p>
         </div>
       </div>
@@ -220,7 +241,6 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
         <div className="space-y-2 mt-4">
           {plans.map((plan) => {
             const Icon = PLAN_ICONS[plan.id] ?? Radio;
-            const isSubmitting = submitting === plan.id;
             const isAwaiting = awaiting === plan.id;
             return (
               <div
@@ -235,12 +255,8 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
                 </div>
                 <div className="flex items-center gap-3 shrink-0">
                   <span className="text-base font-extrabold">${plan.price}</span>
-                  <Button size="sm" onClick={() => handleSubscribe(plan.id)} disabled={busy}>
-                    {isSubmitting ? (
-                      <>
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" /> Sending...
-                      </>
-                    ) : isAwaiting ? (
+                  <Button size="sm" onClick={() => openModal(plan)} disabled={busy}>
+                    {isAwaiting ? (
                       <>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" /> Waiting...
                       </>
@@ -252,6 +268,88 @@ export function SubscriptionSection({ onSubscribed }: SubscriptionSectionProps) 
               </div>
             );
           })}
+        </div>
+      )}
+
+      {modalPlan && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm"
+          onClick={(e) => e.target === e.currentTarget && closeModal()}
+        >
+          <div className="bg-card border rounded-2xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b">
+              <div className="flex items-center gap-2.5">
+                <div className="p-1.5 rounded-lg bg-primary/10 text-primary">
+                  <ModalIcon className="h-4 w-4" />
+                </div>
+                <div>
+                  <h2 className="font-semibold text-base leading-tight">
+                    Subscribe to {modalPlan.name}
+                  </h2>
+                  <p className="text-[11px] text-muted-foreground">M-Pesa STK push</p>
+                </div>
+              </div>
+              <button
+                onClick={closeModal}
+                className="text-muted-foreground hover:text-foreground rounded-full p-1 hover:bg-muted transition-colors"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              <div className="bg-muted/50 rounded-lg px-4 py-2.5 flex justify-between items-center">
+                <span className="text-xs text-muted-foreground">Amount</span>
+                <span className="font-semibold text-sm">
+                  ${modalPlan.price} / {modalPlan.durationDays} days
+                </span>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted-foreground">
+                  M-Pesa Phone Number
+                </label>
+                <input
+                  type="tel"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  placeholder="07XXXXXXXX or 254XXXXXXXX"
+                  className="w-full p-2.5 bg-background border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  You will receive the payment prompt on this number.
+                </p>
+              </div>
+
+              {modalError && (
+                <p className="text-xs text-red-500 bg-red-500/10 rounded-md px-3 py-2">{modalError}</p>
+              )}
+
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={closeModal}
+                  disabled={submitting !== null}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-1"
+                  onClick={confirmSubscribe}
+                  disabled={submitting !== null || !phone.trim()}
+                >
+                  {submitting ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Sending...
+                    </>
+                  ) : (
+                    "Send M-Pesa Prompt"
+                  )}
+                </Button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>

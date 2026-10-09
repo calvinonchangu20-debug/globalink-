@@ -1,5 +1,6 @@
 import axios from "axios";
 import crypto from "crypto";
+import QRCode from "qrcode";
 
 export interface CryptoNetworkConfig {
   id: string; // e.g., 'TRC20'
@@ -55,11 +56,29 @@ export interface CryptoInvoiceResult {
   isSandbox: boolean;
 }
 
+function sortKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === "object") {
+    const source = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(source).sort()) {
+      sorted[key] = sortKeysDeep(source[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+async function buildQrDataUrl(address: string): Promise<string> {
+  return QRCode.toDataURL(address, { width: 250, margin: 1 });
+}
+
 export class CryptoPaymentService {
   private static instance: CryptoPaymentService;
   private apiKey: string | null;
   private ipnSecret: string | null;
   private apiUrl: string;
+  private currencyCache: { fetchedAt: number; currencies: string[] } | null = null;
 
   private constructor() {
     this.apiKey = process.env.NOWPAYMENTS_API_KEY || null;
@@ -74,20 +93,39 @@ export class CryptoPaymentService {
     return CryptoPaymentService.instance;
   }
 
-  /**
-   * Creates a crypto payment invoice with a dedicated deposit address.
-   */
+  public async getEnabledCurrencies(): Promise<string[] | null> {
+    if (!this.apiKey) return null;
+    const now = Date.now();
+    if (this.currencyCache && now - this.currencyCache.fetchedAt < 60 * 60 * 1000) {
+      return this.currencyCache.currencies;
+    }
+    try {
+      const { data } = await axios.get(`${this.apiUrl}/currencies`, {
+        headers: { "x-api-key": this.apiKey },
+      });
+      const currencies: string[] = Array.isArray(data?.currencies) ? data.currencies : [];
+      this.currencyCache = { fetchedAt: now, currencies };
+      return currencies;
+    } catch (err: any) {
+      console.error(
+        "[CryptoService] Failed to fetch enabled currencies:",
+        err?.response?.data || err.message
+      );
+      return null;
+    }
+  }
+
   public async createInvoice(params: CreateCryptoInvoiceParams): Promise<CryptoInvoiceResult> {
-    const network = SUPPORTED_CRYPTO_NETWORKS[params.networkKey] || SUPPORTED_CRYPTO_NETWORKS.TRC20;
+    const network = SUPPORTED_CRYPTO_NETWORKS[params.networkKey];
+    if (!network) {
+      throw new Error(`Unsupported crypto network: ${params.networkKey}`);
+    }
+
     const isSandbox = !this.apiKey || this.apiKey.trim() === "";
 
     if (isSandbox) {
-      // Deterministic mock test address for local development / testing
-      const hash = crypto
-        .createHash("sha256")
-        .update(params.transactionId)
-        .digest("hex");
-      
+      const hash = crypto.createHash("sha256").update(params.transactionId).digest("hex");
+
       let payAddress = "";
       if (network.id === "TRC20") {
         payAddress = `TX${hash.substring(0, 32)}`;
@@ -96,7 +134,6 @@ export class CryptoPaymentService {
       }
 
       const mockPaymentId = `now_${Date.now()}_${params.transactionId.substring(0, 8)}`;
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(payAddress)}`;
 
       return {
         paymentId: mockPaymentId,
@@ -104,9 +141,16 @@ export class CryptoPaymentService {
         payAmount: params.amountUSD,
         payCurrency: network.currency,
         network: network.id,
-        qrCodeUrl,
+        qrCodeUrl: await buildQrDataUrl(payAddress),
         isSandbox: true,
       };
+    }
+
+    const enabledCurrencies = await this.getEnabledCurrencies();
+    if (enabledCurrencies && !enabledCurrencies.includes(network.currency)) {
+      throw new Error(
+        `Currency "${network.currency}" is not enabled on the payment gateway account.`
+      );
     }
 
     try {
@@ -132,7 +176,6 @@ export class CryptoPaymentService {
       const payAddress = data.pay_address;
       const paymentId = String(data.payment_id);
       const payAmount = Number(data.pay_amount || params.amountUSD);
-      const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=250x250&data=${encodeURIComponent(payAddress)}`;
 
       return {
         paymentId,
@@ -140,7 +183,7 @@ export class CryptoPaymentService {
         payAmount,
         payCurrency: network.currency,
         network: network.id,
-        qrCodeUrl,
+        qrCodeUrl: await buildQrDataUrl(payAddress),
         isSandbox: false,
       };
     } catch (err: any) {
@@ -149,13 +192,10 @@ export class CryptoPaymentService {
     }
   }
 
-  /**
-   * Verifies the HMAC-SHA512 signature from NOWPayments IPN webhook.
-   */
-  public verifyIpnSignature(rawBody: any, signatureHeader?: string): boolean {
+  public verifyIpnSignature(rawBody: unknown, signatureHeader?: string): boolean {
     if (!this.ipnSecret) {
-      // In development/test mode without an IPN secret configured, allow requests
-      return true;
+      console.error("[CryptoService] NOWPAYMENTS_IPN_SECRET not configured; rejecting IPN");
+      return false;
     }
 
     if (!signatureHeader) {
@@ -163,28 +203,24 @@ export class CryptoPaymentService {
     }
 
     try {
-      // NOWPayments expects sorted JSON string
-      const sortedKeys = Object.keys(rawBody).sort();
-      const sortedObj: Record<string, any> = {};
-      for (const key of sortedKeys) {
-        sortedObj[key] = rawBody[key];
-      }
-
-      const payloadString = JSON.stringify(sortedObj);
+      const payloadString = JSON.stringify(sortKeysDeep(rawBody));
       const hmac = crypto.createHmac("sha512", this.ipnSecret);
       hmac.update(payloadString);
       const digest = hmac.digest("hex");
 
-      return crypto.timingSafeEqual(Buffer.from(digest), Buffer.from(signatureHeader));
+      const expected = Buffer.from(digest, "utf8");
+      const received = Buffer.from(signatureHeader, "utf8");
+      if (expected.length !== received.length) {
+        return false;
+      }
+
+      return crypto.timingSafeEqual(expected, received);
     } catch (e) {
       console.error("[CryptoService] Signature verification exception:", e);
       return false;
     }
   }
 
-  /**
-   * Queries payment status directly from NOWPayments.
-   */
   public async getPaymentStatus(paymentId: string): Promise<any> {
     if (!this.apiKey) {
       return null;

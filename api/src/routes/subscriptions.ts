@@ -3,7 +3,7 @@ import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, transactions, signalSubscriptions, mpesaPendingStk } from "../db/schema.js";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
-import { getMpesaService } from "../services/mpesa.service.js";
+import { getMpesaService, normalizeKenyanPhone } from "../services/mpesa.service.js";
 import { getUsdToKesRate } from "../services/exchange.service.js";
 
 const router = express.Router();
@@ -165,13 +165,28 @@ router.post("/api/subscriptions/subscribe", authMiddleware, async (req: AuthRequ
     if (!user) {
       return res.status(404).json({ error: "User not found" });
     }
-    if (!user.phoneNumber) {
+
+    const providedPhone = typeof req.body?.phoneNumber === "string" ? req.body.phoneNumber.trim() : "";
+    const rawPhone = providedPhone || user.phoneNumber;
+    if (!rawPhone) {
+      return res.status(400).json({ error: "Please provide an M-Pesa phone number." });
+    }
+
+    let phone: string;
+    try {
+      phone = normalizeKenyanPhone(rawPhone);
+    } catch (phoneErr) {
       return res.status(400).json({
-        error: "No M-Pesa phone number on your account. Add one in your profile before subscribing.",
+        error: phoneErr instanceof Error ? phoneErr.message : "Invalid M-Pesa phone number.",
       });
     }
 
-    const phone = user.phoneNumber;
+    if (phone !== user.phoneNumber) {
+      await db
+        .update(users)
+        .set({ phoneNumber: phone, updatedAt: new Date() })
+        .where(eq(users.id, userId));
+    }
 
     const [existingPending] = await db
       .select()
