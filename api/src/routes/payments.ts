@@ -2,7 +2,7 @@ import express from "express";
 import { getUsdToKesRate } from "../services/exchange.service.js";
 import { eq, and, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, transactions, mpesaPendingStk, cryptoPendingPayments } from "../db/schema.js";
+import { users, transactions, mpesaPendingStk, cryptoPendingPayments, signalSubscriptions } from "../db/schema.js";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
 import { CryptoPaymentService, SUPPORTED_CRYPTO_NETWORKS } from "../services/crypto.service.js";
 import {
@@ -18,6 +18,7 @@ import {
   type B2CCallbackPayload,
 } from "../services/mpesa.service.js";
 import { getMinWithdrawalUSD } from "../services/settings.service.js";
+import { getPlanDurationDays } from "./subscriptions.js";
 
 const router = express.Router();
 
@@ -187,6 +188,11 @@ router.post("/api/payments/mpesa/stk-callback", async (req, res) => {
           .set({ status: "failed", description: result.message })
           .where(eq(transactions.id, pending.transactionId));
 
+        await db
+          .update(signalSubscriptions)
+          .set({ status: "failed" })
+          .where(eq(signalSubscriptions.transactionId, pending.transactionId));
+
         await db.delete(mpesaPendingStk).where(eq(mpesaPendingStk.id, pending.id));
       }
       return;
@@ -232,6 +238,45 @@ router.post("/api/payments/mpesa/stk-callback", async (req, res) => {
       if (!pendingTx) {
         console.warn("[STK callback] Transaction already settled or not found:", pending.transactionId);
         await tx.delete(mpesaPendingStk).where(eq(mpesaPendingStk.id, pending.id));
+        return;
+      }
+
+      // Subscription payment: activate the plan instead of crediting balance
+      if (pendingTx.type === "subscription") {
+        const [subscription] = await tx
+          .select()
+          .from(signalSubscriptions)
+          .where(eq(signalSubscriptions.transactionId, pendingTx.id))
+          .limit(1);
+
+        if (subscription) {
+          const startedAt = new Date();
+          const expiresAt = new Date(
+            startedAt.getTime() + getPlanDurationDays(subscription.plan) * 24 * 60 * 60 * 1000
+          );
+          await tx
+            .update(signalSubscriptions)
+            .set({ status: "active", startedAt, expiresAt })
+            .where(eq(signalSubscriptions.id, subscription.id));
+        }
+
+        await tx
+          .update(transactions)
+          .set({
+            status: "completed",
+            mpesaReceiptNumber: result.mpesaReceiptNumber,
+            mpesaTransactionId: result.checkoutRequestId,
+            phoneNumber: result.phoneNumber,
+            completedAt: new Date(),
+            description: `Signal subscription payment - receipt ${result.mpesaReceiptNumber}`,
+          })
+          .where(eq(transactions.id, pendingTx.id));
+
+        await tx.delete(mpesaPendingStk).where(eq(mpesaPendingStk.id, pending.id));
+
+        console.log(
+          `[STK callback] Activated subscription for user ${pending.userId} (receipt ${result.mpesaReceiptNumber})`
+        );
         return;
       }
 

@@ -1,12 +1,15 @@
 import express, { Response } from "express";
 import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, transactions, signalSubscriptions } from "../db/schema.js";
+import { users, transactions, signalSubscriptions, mpesaPendingStk } from "../db/schema.js";
 import { authMiddleware, AuthRequest } from "../middleware/auth.js";
+import { getMpesaService } from "../services/mpesa.service.js";
+import { getUsdToKesRate } from "../services/exchange.service.js";
 
 const router = express.Router();
 
 const PLAN_DURATION_DAYS = 30;
+const STK_PENDING_TTL_MS = 5 * 60 * 1000;
 
 export const SIGNAL_PLANS = [
   {
@@ -60,20 +63,10 @@ export const SIGNAL_PLANS = [
 
 type SignalPlanId = (typeof SIGNAL_PLANS)[number]["id"];
 
-const PLAN_BY_ID = new Map(
-  SIGNAL_PLANS.map((plan) => [plan.id, plan] as const)
-);
+const PLAN_BY_ID = new Map(SIGNAL_PLANS.map((plan) => [plan.id, plan] as const));
 
-class SubscriptionError extends Error {
-  constructor(
-    public code: "INSUFFICIENT_FUNDS" | "ALREADY_SUBSCRIBED",
-    public planName?: string,
-    public expiresAt?: Date,
-    public balance?: string
-  ) {
-    super(code);
-    this.name = "SubscriptionError";
-  }
+export function getPlanDurationDays(planId: string): number {
+  return PLAN_BY_ID.get(planId as SignalPlanId)?.durationDays ?? PLAN_DURATION_DAYS;
 }
 
 function serializeSubscription(row: typeof signalSubscriptions.$inferSelect) {
@@ -130,120 +123,153 @@ router.get("/api/subscriptions", authMiddleware, async (req: AuthRequest, res: R
 });
 
 router.post("/api/subscriptions/subscribe", authMiddleware, async (req: AuthRequest, res: Response) => {
-  const userId = req.user?.id;
-  if (!userId) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const requestedPlan = req.body?.plan;
-  const plan =
-    typeof requestedPlan === "string"
-      ? PLAN_BY_ID.get(requestedPlan as SignalPlanId)
-      : undefined;
-
-  if (!plan) {
-    return res.status(400).json({ error: "Invalid plan. Choose one of: basic, premium, vip" });
-  }
-
-  const price = plan.price.toFixed(2);
-
   try {
-    const result = await db.transaction(async (tx) => {
-      const [existing] = await tx
-        .select()
-        .from(signalSubscriptions)
-        .where(
-          and(
-            eq(signalSubscriptions.userId, userId),
-            eq(signalSubscriptions.status, "active"),
-            gt(signalSubscriptions.expiresAt, new Date())
-          )
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    const requestedPlan = req.body?.plan;
+    const plan =
+      typeof requestedPlan === "string"
+        ? PLAN_BY_ID.get(requestedPlan as SignalPlanId)
+        : undefined;
+
+    if (!plan) {
+      return res.status(400).json({ error: "Invalid plan. Choose one of: basic, premium, vip" });
+    }
+
+    const price = plan.price.toFixed(2);
+
+    const [active] = await db
+      .select()
+      .from(signalSubscriptions)
+      .where(
+        and(
+          eq(signalSubscriptions.userId, userId),
+          eq(signalSubscriptions.status, "active"),
+          gt(signalSubscriptions.expiresAt, new Date())
         )
-        .orderBy(desc(signalSubscriptions.createdAt))
-        .limit(1);
+      )
+      .orderBy(desc(signalSubscriptions.createdAt))
+      .limit(1);
 
-      if (existing) {
-        const activePlan = PLAN_BY_ID.get(existing.plan as SignalPlanId);
-        throw new SubscriptionError(
-          "ALREADY_SUBSCRIBED",
-          activePlan?.name ?? existing.plan,
-          existing.expiresAt
-        );
-      }
+    if (active) {
+      const activePlan = PLAN_BY_ID.get(active.plan as SignalPlanId);
+      return res.status(400).json({
+        error: `You already have an active ${activePlan?.name ?? active.plan} subscription until ${active.expiresAt.toLocaleDateString()}.`,
+      });
+    }
 
-      const [updatedUser] = await tx
-        .update(users)
-        .set({
-          balance: sql`${users.balance} - ${price}::numeric`,
-          updatedAt: new Date(),
-        })
-        .where(
-          and(eq(users.id, userId), sql`${users.balance} >= ${price}::numeric`)
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    if (!user.phoneNumber) {
+      return res.status(400).json({
+        error: "No M-Pesa phone number on your account. Add one in your profile before subscribing.",
+      });
+    }
+
+    const phone = user.phoneNumber;
+
+    const [existingPending] = await db
+      .select()
+      .from(mpesaPendingStk)
+      .where(
+        and(
+          eq(mpesaPendingStk.userId, userId),
+          sql`${mpesaPendingStk.expiresAt} > now()`
         )
-        .returning({ balance: users.balance });
+      )
+      .limit(1);
 
-      if (!updatedUser) {
-        const [account] = await tx
-          .select({ balance: users.balance })
-          .from(users)
-          .where(eq(users.id, userId));
-        throw new SubscriptionError("INSUFFICIENT_FUNDS", undefined, undefined, account?.balance);
-      }
+    if (existingPending) {
+      return res.status(429).json({
+        error: "You already have a pending M-Pesa prompt. Please complete or wait for it to expire.",
+      });
+    }
 
-      const newBalance = updatedUser.balance;
+    const rate = await getUsdToKesRate();
+    const kesAmount = Math.floor(plan.price * rate);
+    if (kesAmount < 10) {
+      return res.status(400).json({ error: "Amount is too small to process via M-Pesa." });
+    }
 
-      const [ledger] = await tx
+    const pendingTxId = await db.transaction(async (tx) => {
+      const [pendingTx] = await tx
         .insert(transactions)
         .values({
           userId,
           amount: price,
           direction: "debit",
           type: "subscription",
-          status: "completed",
-          balanceAfter: newBalance,
+          status: "pending",
+          phoneNumber: phone,
           description: `Signal subscription - ${plan.name} plan (${plan.durationDays} days)`,
         })
         .returning();
 
-      const startedAt = new Date();
-      const expiresAt = new Date(startedAt.getTime() + plan.durationDays * 24 * 60 * 60 * 1000);
+      await tx.insert(signalSubscriptions).values({
+        userId,
+        plan: plan.id,
+        amountUsd: price,
+        status: "pending",
+        startedAt: new Date(),
+        expiresAt: new Date(Date.now() + plan.durationDays * 24 * 60 * 60 * 1000),
+        transactionId: pendingTx.id,
+      });
 
-      const [subscription] = await tx
-        .insert(signalSubscriptions)
-        .values({
-          userId,
-          plan: plan.id,
-          amountUsd: price,
-          status: "active",
-          startedAt,
-          expiresAt,
-          transactionId: ledger.id,
-        })
-        .returning();
-
-      return { subscription, newBalance };
+      return pendingTx.id;
     });
 
-    res.json({
+    const mpesa = getMpesaService();
+    let stkResponse;
+    try {
+      stkResponse = await mpesa.initiateSTKPush(
+        phone,
+        kesAmount,
+        pendingTxId,
+        `Signal subscription - ${plan.name}`
+      );
+    } catch (stkErr) {
+      const reason = stkErr instanceof Error ? stkErr.message : "M-Pesa request failed";
+      await db.transaction(async (tx) => {
+        await tx
+          .update(transactions)
+          .set({ status: "failed", description: `STK Push failed: ${reason}` })
+          .where(eq(transactions.id, pendingTxId));
+        await tx
+          .update(signalSubscriptions)
+          .set({ status: "failed" })
+          .where(eq(signalSubscriptions.transactionId, pendingTxId));
+      });
+      return res.status(400).json({ error: reason });
+    }
+
+    const expiresAt = new Date(Date.now() + STK_PENDING_TTL_MS);
+    await db.insert(mpesaPendingStk).values({
+      userId,
+      transactionId: pendingTxId,
+      merchantRequestId: stkResponse.MerchantRequestID,
+      checkoutRequestId: stkResponse.CheckoutRequestID,
+      amount: price,
+      phoneNumber: phone,
+      expiresAt,
+    });
+
+    return res.json({
       success: true,
-      message: `Subscribed to ${plan.name} plan for ${plan.durationDays} days.`,
-      subscription: serializeSubscription(result.subscription),
-      newBalance: parseFloat(result.newBalance),
+      message: `M-Pesa prompt sent to ${phone} for $${plan.price}. Enter your PIN to activate the ${plan.name} plan.`,
+      plan: plan.id,
+      planName: plan.name,
+      amount: plan.price,
+      checkoutRequestId: stkResponse.CheckoutRequestID,
+      transactionId: pendingTxId,
+      expiresAt,
     });
   } catch (error) {
-    if (error instanceof SubscriptionError) {
-      if (error.code === "INSUFFICIENT_FUNDS") {
-        const balance = parseFloat(error.balance ?? "0").toFixed(2);
-        return res.status(400).json({
-          error: `Insufficient balance. This plan costs $${price} but your balance is $${balance}.`,
-        });
-      }
-      const until = error.expiresAt ? error.expiresAt.toLocaleDateString() : "soon";
-      return res.status(400).json({
-        error: `You already have an active ${error.planName} subscription until ${until}.`,
-      });
-    }
-    console.error("Subscribe error:", error);
+    console.error("[subscriptions] subscribe error:", error);
     return res.status(500).json({ error: "Internal server error" });
   }
 });
