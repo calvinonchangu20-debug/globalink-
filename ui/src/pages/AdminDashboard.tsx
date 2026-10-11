@@ -1298,7 +1298,7 @@ export default function AdminDashboard() {
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in">
-            <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5 animate-in zoom-in-95">
+            <div className="bg-card border rounded-2xl shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto p-6 space-y-5 animate-in zoom-in-95">
               {/* Header */}
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">

@@ -152,6 +152,7 @@ export function TradingPanel({
   const sessionWinsRef = useRef(0)
   const sessionLossesRef = useRef(0)
   const botTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const baseStakeRef = useRef<number>(stake)
 
   const startBot = async (type: "even" | "odd" | "match" | "differ") => {
     if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current)
@@ -190,10 +191,12 @@ export function TradingPanel({
     setTradeMessage({ text: `Bot started on ${type.toUpperCase()} (Target: +$${targetProfit}, Stop: -$${stopLoss})`, type: "success" })
 
     // Instantly place the first trade!
+    const baseStake = Number(stake.toFixed(2))
+    baseStakeRef.current = baseStake
     const firstRes = await placeTrade({
       symbol,
       type,
-      stake: Number(stake.toFixed(2)),
+      stake: baseStake,
       durationSeconds: 1,
       accountType,
     })
@@ -252,18 +255,18 @@ export function TradingPanel({
       setSessionWins(sessionWinsRef.current)
       setSessionLosses(sessionLossesRef.current)
 
-      // Stop conditions: Stop immediately on any Win, Target Profit, or Stop Loss
-      if (isWin || currentSessionPnL >= targetProfit) {
-        stopBot(isWin ? `Win achieved (+${profitDelta.toFixed(2)} USD)!` : `Target profit reached!`, true, false)
+      if (!isDemo) refetchWallet()
+
+      if (targetProfit > 0 && currentSessionPnL >= targetProfit) {
+        stopBot(`Target profit reached (+$${currentSessionPnL.toFixed(2)})!`, true, false)
         return
       }
-      if (currentSessionPnL <= -stopLoss) {
-        stopBot(`Stop loss hit!`, false, true)
+      if (stopLoss > 0 && currentSessionPnL <= -stopLoss) {
+        stopBot(`Stop loss hit (-$${Math.abs(currentSessionPnL).toFixed(2)})!`, false, true)
         return
       }
 
-      // Martingale next stake calculation on loss
-      const nextStake = Number(latest.stake) * multiplier
+      const nextStake = isWin ? baseStakeRef.current : Number(latest.stake) * multiplier
 
       // Schedule next bot trade in 1.2s
       botTimeoutRef.current = setTimeout(() => {
@@ -298,13 +301,17 @@ export function TradingPanel({
       setSessionWins(isWin ? 1 : 0)
       setSessionLosses(isWin ? 0 : 1)
       setIsStopLossHit(!isWin)
+      if (!isDemo) refetchWallet()
       setShowWinModal(true)
     }
 
+  }, [closedTrades, isBotRunning, accountType, isDemo, symbol, botTradeType, multiplier, placeTrade, refetchWallet])
+
+  useEffect(() => {
     return () => {
       if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current)
     }
-  }, [closedTrades, isBotRunning, accountType, isDemo, symbol, botTradeType, multiplier, placeTrade, refetchWallet])
+  }, [])
 
   // Automatically halt running bot if user switches between Real and Demo accounts
   useEffect(() => {
