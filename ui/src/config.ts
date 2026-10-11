@@ -22,6 +22,8 @@ export const VOLATILITY_SYMBOLS: VolatilitySymbol[] = [
 
 export const DEFAULT_SYMBOL = "1HZ10V";
 
+export const MIN_STAKE = 2;
+
 export type ChartStyle = "candlestick" | "line" | "area" | "bar";
 
 export const CHART_STYLES: { value: ChartStyle; label: string }[] = [

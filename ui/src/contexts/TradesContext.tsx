@@ -2,6 +2,7 @@ import React, { createContext, useContext, useState, useEffect, useCallback, use
 import { useAuth } from "@/contexts/AuthContext";
 import { useAccount } from "@/contexts/AccountContext";
 import { apiFetch } from "@/lib/api";
+import { MIN_STAKE } from "@/config";
 
 export interface Trade {
   id: string;
@@ -184,8 +185,8 @@ export function TradesProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       try {
-        if (params.stake < 1) {
-          throw new Error("Minimum stake is $1.00");
+        if (params.stake < MIN_STAKE) {
+          throw new Error(`Minimum stake is $${MIN_STAKE.toFixed(2)}`);
         }
 
         if (demoBalanceRef.current < params.stake) {

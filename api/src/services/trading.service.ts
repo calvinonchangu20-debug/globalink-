@@ -4,6 +4,7 @@ import { eq, and, lte, sql } from "drizzle-orm";
 import { getTicksHistory } from "../deriv-client.js";
 
 export const PAYOUT_MULTIPLIER = 1.9522; // 95.22% default profit on win
+export const MIN_STAKE = 2;
 const SETTLEMENT_INTERVAL_MS = 1000; // Check every second
 
 export type TradeType = (typeof tradeTypeEnum.enumValues)[number];
@@ -85,7 +86,7 @@ export class TradingService {
   }) {
     const { userId, symbol, type, stake, durationSeconds, accountType = "real" } = params;
 
-    if (stake <= 0) throw new Error("Stake must be greater than $0");
+    if (!Number.isFinite(stake) || stake < MIN_STAKE) throw new Error(`Minimum stake is $${MIN_STAKE.toFixed(2)}`);
     if (durationSeconds < 1 || durationSeconds > 3600) throw new Error("Duration must be between 1s and 1 hour");
 
     // Get current live tick from Deriv for accurate entry price
