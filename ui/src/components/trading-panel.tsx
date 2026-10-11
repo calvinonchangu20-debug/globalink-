@@ -54,7 +54,7 @@ export function TradingPanel({
 
   const [tradeMessage, setTradeMessage] = useState<{ text: string; type: "success" | "error" } | null>(null)
 
-  const quickChips = [1, 5, 10, 25, 50, 100]
+  const quickChips = [2, 5, 10, 25, 50, 100]
   
   // Dynamic payouts based on contract category
   const payoutMultiplier = category === "match_differ" 
