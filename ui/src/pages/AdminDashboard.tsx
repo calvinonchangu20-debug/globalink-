@@ -926,14 +926,7 @@ export default function AdminDashboard() {
                                         <button
                                           type="button"
                                           onClick={() => {
-                                            // If user has favorable engine or no engine set (undefined), don't open menu
-                                            if (u.tradingEngine === "favorable" || u.tradingEngine === undefined) {
-                                              return;
-                                            }
-                                            // If user has standard engine (not favorable and not undefined), don't open menu
-                                            if (u.tradingEngine !== "favorable" && u.tradingEngine !== undefined) {
-                                              return;
-                                            }
+                                            if (u.tradingEngine !== "favorable") return;
                                             setOpenActionMenuUserId(null);
                                             setPendingEngineChange({ user: u, newEngine: "standard" });
                                           }}
