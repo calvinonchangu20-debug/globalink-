@@ -3,7 +3,6 @@ import { Button } from "@/components/ui/button"
 import { useTrades } from "@/hooks/use-trades"
 import { useWallet } from "@/hooks/use-wallet"
 import { useAccount } from "@/contexts/AccountContext"
-import { MIN_STAKE } from "@/config"
 import { WinModal } from "@/components/win-modal"
 import {  Minus, Plus, Target, AlertTriangle, Zap, Square } from "lucide-react"
 
@@ -35,9 +34,9 @@ export function TradingPanel({
   const category = externalCategory ?? "even_odd"
 
   const [stakeMode, setStakeMode] = useState<StakeMode>("stake")
-  const [stake, setStake] = useState<number>(MIN_STAKE)
+  const [stake, setStake] = useState<number>(1)
   const [selectedDigit, setSelectedDigit] = useState<number>(5)
-  
+  s
   // Bot/Auto Parameters
   const [targetProfit, setTargetProfit] = useState<number>(200)
   const [stopLoss, setStopLoss] = useState<number>(999)
@@ -55,7 +54,7 @@ export function TradingPanel({
 
   const [tradeMessage, setTradeMessage] = useState<{ text: string; type: "success" | "error" } | null>(null)
 
-  const quickChips = [MIN_STAKE, 5, 10, 25, 50, 100]
+  const quickChips = [2, 5, 10, 25, 50, 100]
   
   // Dynamic payouts based on contract category
   const payoutMultiplier = category === "match_differ" 
@@ -69,7 +68,7 @@ export function TradingPanel({
   botRunningRef.current = isBotRunning
 
   // Stepper handlers
-  const handleDecrement = () => setStake((prev) => Math.max(MIN_STAKE, prev - 1))
+  const handleDecrement = () => setStake((prev) => Math.max(1, prev - 1))
   const handleIncrement = () => setStake((prev) => prev + 1)
 
   // Leading-zero sanitizers so inputs don't format as 05, 067 etc.
@@ -111,8 +110,8 @@ export function TradingPanel({
   const handleExecute = async (selectedType: "even" | "odd" | "match" | "differ" | "over" | "under") => {
     setTradeMessage(null)
 
-    if (currentStake < MIN_STAKE) {
-      setTradeMessage({ text: `Minimum stake is $${MIN_STAKE.toFixed(2)}`, type: "error" })
+    if (currentStake < 1) {
+      setTradeMessage({ text: "Minimum stake is $1", type: "error" })
       return
     }
 
@@ -157,12 +156,7 @@ export function TradingPanel({
 
   const startBot = async (type: "even" | "odd" | "match" | "differ") => {
     if (botTimeoutRef.current) clearTimeout(botTimeoutRef.current)
-
-    if (stake < MIN_STAKE) {
-      setTradeMessage({ text: `Minimum stake is $${MIN_STAKE.toFixed(2)}`, type: "error" })
-      return
-    }
-
+    
     const availableBalance = isDemo ? demoBalance : (wallet?.balance ?? 0)
     if (availableBalance < stake) {
       setTradeMessage({
@@ -437,13 +431,13 @@ export function TradingPanel({
               <span className="text-xs font-semibold text-primary">$</span>
               <input
                 type="number"
-                min={MIN_STAKE}
+                min="1"
                 value={stake === 0 ? "" : stake}
-                placeholder={String(MIN_STAKE)}
+                placeholder="1"
                 onFocus={(e) => e.target.select()}
                 onChange={handleStakeInput}
                 onBlur={() => {
-                  if (stake < MIN_STAKE) setStake(MIN_STAKE);
+                  if (stake < 2) setStake(2);
                 }}
                 className="bg-transparent text-center font-bold text-base text-foreground w-16 focus:outline-none"
               />

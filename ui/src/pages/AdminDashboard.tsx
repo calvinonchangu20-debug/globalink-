@@ -21,6 +21,7 @@ import {
   MinusCircle,
   Pencil,
   X,
+  Cpu,   // ← new
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { apiFetch, safeJson } from "@/lib/api";
@@ -57,6 +58,7 @@ interface AdminUser {
   email: string;
   phoneNumber?: string;
   role: string;
+  tradingEngine?: string;   // ← new: "standard" | "favorable"
   balance: string;
   createdAt: string;
 }
@@ -115,6 +117,14 @@ export default function AdminDashboard() {
     newRole: "USER" | "ADMIN";
   } | null>(null);
   const [isUpdatingRole, setIsUpdatingRole] = useState(false);
+
+  // Engine Change State
+  const [pendingEngineChange, setPendingEngineChange] = useState<{
+    user: AdminUser;
+    newEngine: "standard" | "favorable";
+  } | null>(null);
+  const [isUpdatingEngine, setIsUpdatingEngine] = useState(false);
+  const [engineSuccessAlert, setEngineSuccessAlert] = useState<string | null>(null);
 
   // Action Menu & Balance Edit State
   const [openActionMenuUserId, setOpenActionMenuUserId] = useState<string | null>(null);
@@ -282,6 +292,42 @@ export default function AdminDashboard() {
       console.error("Failed to update role:", err);
     } finally {
       setIsUpdatingRole(false);
+    }
+  };
+
+  const handleConfirmEngineChange = async () => {
+    if (!token || !pendingEngineChange) return;
+    const { user: targetUser, newEngine } = pendingEngineChange;
+    setIsUpdatingEngine(true);
+    try {
+      const res = await apiFetch(`/api/admin/users/${targetUser.id}/engine`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tradingEngine: newEngine }),
+      });
+      if (res.ok) {
+        setUsersList((prev) =>
+          prev.map((u) =>
+            u.id === targetUser.id ? { ...u, tradingEngine: newEngine } : u
+          )
+        );
+        setEngineSuccessAlert(
+          `@${targetUser.username} switched to ${
+            newEngine === "favorable"
+              ? "Favorable (almost always wins)"
+              : "Standard (1-in-6)"
+          } engine.`
+        );
+        setTimeout(() => setEngineSuccessAlert(null), 6000);
+        setPendingEngineChange(null);
+      } else {
+        const data = await safeJson(res);
+        alert(data?.error || `Failed to update engine (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      console.error("Failed to update engine:", err);
+    } finally {
+      setIsUpdatingEngine(false);
     }
   };
 
@@ -651,6 +697,100 @@ export default function AdminDashboard() {
                 </div>
               )}
 
+              {engineSuccessAlert && (
+                <div className="bg-indigo-500/10 border border-indigo-500/20 text-indigo-600 dark:text-indigo-400 px-4 py-3 rounded-xl text-xs flex items-center justify-between shadow-sm animate-in fade-in">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 shrink-0 text-indigo-500" />
+                    <span className="font-medium">{engineSuccessAlert}</span>
+                  </div>
+                  <button
+                    onClick={() => setEngineSuccessAlert(null)}
+                    className="text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
+
+              {/* Trading Engine Change Confirmation Modal */}
+              {pendingEngineChange && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm p-4 animate-in fade-in">
+                  <div className="bg-card rounded-2xl shadow-2xl max-w-md w-full p-6 space-y-5">
+                    <div className="flex items-center gap-3">
+                      <div
+                        className={`p-3 rounded-xl ${
+                          pendingEngineChange.newEngine === "favorable"
+                            ? "bg-emerald-500/10 text-emerald-500"
+                            : "bg-amber-500/10 text-amber-500"
+                        }`}
+                      >
+                        <Cpu className="h-6 w-6" />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-base">
+                          {pendingEngineChange.newEngine === "favorable"
+                            ? "Switch to Favorable Engine"
+                            : "Switch to Standard Engine"}
+                        </h3>
+                        <p className="text-xs text-muted-foreground">Action requires confirmation</p>
+                      </div>
+                    </div>
+
+                    <div className="text-sm bg-muted/50 p-4 rounded-xl space-y-2 border">
+                      <div>
+                        <span className="text-muted-foreground text-xs block">Target User:</span>
+                        <span className="font-semibold">
+                          {pendingEngineChange.user.firstName} {pendingEngineChange.user.secondName}
+                        </span>
+                        <span className="text-xs text-muted-foreground ml-1.5">
+                          (@{pendingEngineChange.user.username})
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-muted-foreground text-xs block">Email Address:</span>
+                        <span className="font-mono text-xs">{pendingEngineChange.user.email}</span>
+                      </div>
+                      <div className="pt-2 border-t text-xs">
+                        {pendingEngineChange.newEngine === "favorable" ? (
+                          <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                            ⚠️ This user will win the vast majority of their trades (~95% per round). Use with caution.
+                          </span>
+                        ) : (
+                          <span className="text-amber-600 dark:text-amber-400 font-medium">
+                            This user returns to the default engine: first trade wins, then 1-in-6 chance per round.
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-end gap-3 pt-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => setPendingEngineChange(null)}
+                        disabled={isUpdatingEngine}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        onClick={handleConfirmEngineChange}
+                        disabled={isUpdatingEngine}
+                        className={
+                          pendingEngineChange.newEngine === "favorable"
+                            ? "bg-emerald-600 hover:bg-emerald-700 text-white"
+                            : "bg-amber-600 hover:bg-amber-700 text-white"
+                        }
+                      >
+                        {isUpdatingEngine
+                          ? "Updating..."
+                          : `Confirm ${
+                              pendingEngineChange.newEngine === "favorable" ? "Favorable" : "Standard"
+                            }`}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Filter Toolbar */}
               <div className="bg-card border rounded-xl p-3.5 flex flex-col sm:flex-row gap-3 items-center justify-between shadow-sm">
                 <div className="w-full sm:w-80 relative">
@@ -696,10 +836,21 @@ export default function AdminDashboard() {
                     <tbody className="divide-y">
                       {filteredUsers.map((u) => (
                         <tr key={u.id} className="hover:bg-muted/30">
-                          <td className="px-4 py-3">
-                            <div className="font-medium">{u.firstName} {u.secondName}</div>
-                            <div className="text-xs text-muted-foreground">@{u.username} • {u.email}</div>
-                          </td>
+<td className="px-4 py-3">
+  <div className="font-medium">{u.firstName} {u.secondName}</div>
+  <div className="text-xs text-muted-foreground flex items-center gap-1.5 flex-wrap">
+    <span>@{u.username} • {u.email}</span>
+    {u.tradingEngine === "favorable" ? (
+      <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
+        Favorable
+      </span>
+    ) : (
+      <span className="text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30">
+        Standard
+      </span>
+    )}
+  </div>
+</td>
                           <td className="px-4 py-3 font-mono text-xs">{u.phoneNumber || "—"}</td>
                           <td className="px-4 py-3">
                             <select
@@ -765,6 +916,54 @@ export default function AdminDashboard() {
                                   </button>
 
                                   <div className="h-px bg-border my-1" />
+
+                                    {/* Trading Engine Selector */}
+                                    <div className="px-3 pt-2 pb-1">
+                                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1.5">
+                                        Trading Engine
+                                      </div>
+                                      <div className="grid grid-cols-2 gap-1.5">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            if (u.tradingEngine === "favorable" || u.tradingEngine === undefined) {
+                                              // already standard (or default)
+                                              if (u.tradingEngine === "standard" || u.tradingEngine === undefined) return;
+                                            }
+                                            if (u.tradingEngine === "standard") return;
+                                            setOpenActionMenuUserId(null);
+                                            setPendingEngineChange({ user: u, newEngine: "standard" });
+                                          }}
+                                          className={`text-[10px] py-1.5 rounded-lg border font-semibold transition-colors cursor-pointer ${
+                                            u.tradingEngine !== "favorable"
+                                              ? "bg-amber-500/15 border-amber-500/40 text-amber-600 dark:text-amber-400"
+                                              : "border-border text-muted-foreground hover:bg-muted"
+                                          }`}
+                                        >
+                                          Standard
+                                        </button>
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            if (u.tradingEngine === "favorable") return;
+                                            setOpenActionMenuUserId(null);
+                                            setPendingEngineChange({ user: u, newEngine: "favorable" });
+                                          }}
+                                          className={`text-[10px] py-1.5 rounded-lg border font-semibold transition-colors cursor-pointer ${
+                                            u.tradingEngine === "favorable"
+                                              ? "bg-emerald-500/15 border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
+                                              : "border-border text-muted-foreground hover:bg-muted"
+                                          }`}
+                                        >
+                                          Favorable
+                                        </button>
+                                      </div>
+                                      <p className="text-[10px] text-muted-foreground mt-1.5 leading-tight">
+                                        {u.tradingEngine === "favorable"
+                                          ? "Almost always wins (~95% per round)."
+                                          : "First try wins, then 1-in-6 per round."}
+                                      </p>
+                                    </div>
 
                                     {/* View User's Trades */}
                                     <button

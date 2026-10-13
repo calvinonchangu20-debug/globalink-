@@ -45,7 +45,7 @@ export default function Dashboard() {
     handleResize() // init
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
-  }, [])
+  }, [])s
 
   const currentSymbol = VOLATILITY_SYMBOLS.find((s) => s.symbol === symbol)
   const { price, prevPrice, percentageChange } = useLivePrice(symbol)

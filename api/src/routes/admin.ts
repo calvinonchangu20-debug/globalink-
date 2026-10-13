@@ -102,6 +102,7 @@ router.get("/api/admin/users", authMiddleware, requireAdmin, async (_req: AuthRe
         email: users.email,
         phoneNumber: users.phoneNumber,
         role: users.role,
+        tradingEngine: users.tradingEngine,   // ← new
         balance: users.balance,
         createdAt: users.createdAt,
       })
@@ -212,6 +213,52 @@ router.patch("/api/admin/users/:id/role", authMiddleware, requireAdmin, async (r
   } catch (err: any) {
     console.error("[admin] Error updating user role:", err);
     res.status(500).json({ error: err.message || "Failed to update role" });
+  }
+});
+
+/**
+ * PATCH /api/admin/users/:id/engine
+ * Switches a user's trade-settlement engine between:
+ *   - "standard"  → first attempt wins, then 1-in-6 chance per round (existing)
+ *   - "favorable" → almost always wins (~95% per round)
+ */
+router.patch("/api/admin/users/:id/engine", authMiddleware, requireAdmin, async (req: AuthRequest, res) => {
+  try {
+    const targetUserId = req.params.id;
+    const { tradingEngine } = req.body;
+
+    if (!tradingEngine || !["standard", "favorable"].includes(tradingEngine)) {
+      return res.status(400).json({
+        error: "Invalid trading engine. Allowed values: standard, favorable",
+      });
+    }
+
+    const [updatedUser] = await db
+      .update(users)
+      .set({ tradingEngine, updatedAt: new Date() })
+      .where(eq(users.id, targetUserId))
+      .returning({
+        id: users.id,
+        username: users.username,
+        tradingEngine: users.tradingEngine,
+      });
+
+    if (!updatedUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const label =
+      tradingEngine === "favorable"
+        ? "Favorable (almost always wins)"
+        : "Standard (1-in-6 win chance)";
+
+    res.json({
+      message: `User ${updatedUser.username} now uses the ${label} engine.`,
+      user: updatedUser,
+    });
+  } catch (err: any) {
+    console.error("[admin] Error updating trading engine:", err);
+    res.status(500).json({ error: err.message || "Failed to update trading engine" });
   }
 });
 

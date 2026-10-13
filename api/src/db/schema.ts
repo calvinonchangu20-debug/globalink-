@@ -70,6 +70,16 @@ export const users = pgTable("users", {
   role: varchar("role", { length: 50 }).notNull().default("USER"),
   otp: varchar("otp", { length: 6 }),
   otpExpiry: timestamp("otp_expiry"),
+
+  /**
+   * Which outcome engine settles this user's trades.
+   *  - "standard"  → existing behaviour (first try wins, then 1-in-6 chance)
+   *  - "favorable" → almost always wins (~95% per round)
+   */
+  tradingEngine: varchar("trading_engine", { length: 20 })
+    .notNull()
+    .default("standard"),
+
   /**
    * Current wallet balance in USD (2 decimal places).
    * Always kept in sync with the sum of completed transactions.
