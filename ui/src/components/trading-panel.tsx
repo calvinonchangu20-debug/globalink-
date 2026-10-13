@@ -35,9 +35,8 @@ export function TradingPanel({
 
   const [stakeMode, setStakeMode] = useState<StakeMode>("stake")
   const [stake, setStake] = useState<number>(1)
-  const [selectedDigit, setSelectedDigit] = useState<number>(5)
-  s
-  // Bot/Auto Parameters
+const [selectedDigit, setSelectedDigit] = useState<number>(5)
+// Bot/Auto Parameters
   const [targetProfit, setTargetProfit] = useState<number>(200)
   const [stopLoss, setStopLoss] = useState<number>(999)
   const [multiplier, setMultiplier] = useState<number>(2)
