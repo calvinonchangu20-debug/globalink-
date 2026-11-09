@@ -56,7 +56,7 @@ const PAYMENT_METHODS = [
     icon: Coins,
     color: "text-amber-500 dark:text-amber-400",
     bg: "bg-amber-500/10",
-    disabled: false as boolean,
+    disabled: true as boolean,
   },
 ] as const
 

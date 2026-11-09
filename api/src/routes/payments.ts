@@ -865,6 +865,10 @@ router.post("/api/payments/mpesa/register-c2b", authMiddleware, async (req: Auth
 
 // ─── CRYPTO PAYMENTS (USDT via NOWPayments) ──────────────────────────────────
 
+// Crypto deposits are temporarily disabled. Existing pending invoices can still
+// settle through the status, IPN, and simulate-pay routes below.
+const CRYPTO_DEPOSITS_ENABLED: boolean = false;
+
 // GET /api/payments/crypto/config
 // Returns supported networks and deposit minimums
 router.get("/api/payments/crypto/config", (_req, res) => {
@@ -907,6 +911,10 @@ router.get("/api/payments/crypto/currencies", authMiddleware, async (req: AuthRe
 // POST /api/payments/crypto/deposit
 // Authenticated. Creates a pending transaction and crypto invoice with a deposit address.
 router.post("/api/payments/crypto/deposit", authMiddleware, async (req: AuthRequest, res) => {
+  if (!CRYPTO_DEPOSITS_ENABLED) {
+    return res.status(503).json({ error: "Crypto deposits are temporarily disabled" });
+  }
+
   try {
     const userId = req.user!.id;
     const { amount, network = "TRC20" } = req.body;

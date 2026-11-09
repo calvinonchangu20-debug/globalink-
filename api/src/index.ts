@@ -15,7 +15,7 @@ import { attachTicksWebSocket } from "./ws-ticks.js";
 import { initSystemSettings } from "./services/settings.service.js";
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 8080;
 
 // Middleware
 const allowedOrigins = [
@@ -67,7 +67,7 @@ initSystemSettings().catch((err) =>
 // Start background settlement engine
 TradingService.getInstance().startSettlementEngine();
 
-server.listen(PORT, () => {
+server.listen(PORT, "0.0.0.0", () => {
   console.log(`[api] Server running on http://localhost:${PORT}`);
   console.log(`[api] Routes:`);
   console.log(`  GET  /api/health`);
